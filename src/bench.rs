@@ -6,26 +6,30 @@ use bus::Bus;
 
 fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
     use std::thread;
+    use std::time::Duration;
 
     let mut c = Bus::new(buf);
     let wait = (0..rxs)
         .map(|_| c.add_rx())
         .map(|mut rx| {
             thread::spawn(move || {
+                let w = Duration::new(0, 10);
                 loop {
-                    if let Ok(true) = unsafe { rx.recv() } {
-                        break;
+                    match unsafe { rx.recv() } {
+                        Ok(true) => break,
+                        Err(..) => thread::sleep(w),
+                        _ => continue,
                     }
-                    thread::yield_now();
                 }
             })
         })
         .collect::<Vec<_>>();
 
+    let w = Duration::new(0, 10);
     let start = time::precise_time_ns();
     for _ in 0..iter {
         while let Err(_) = c.broadcast(false) {
-            thread::yield_now();
+            thread::sleep(w);
         }
     }
 
@@ -48,7 +52,7 @@ fn main() {
              2,
              helper(10, num, 1) as f64 / num as f64);
 
-    for threads in 1..num_cpus::get() {
+    for threads in 1..(num_cpus::get() + 1) {
         println!("{} {} {:.*} μs/op",
                  threads,
                  1_000,
