@@ -1,3 +1,5 @@
+callgrind.out.*
+
 # Compiled files
 *.o
 *.so
