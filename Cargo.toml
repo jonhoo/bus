@@ -1,0 +1,14 @@
+[package]
+name = "bus"
+version = "0.1.0"
+authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
+
+[dependencies]
+time = "0.1"
+
+[profile.release]
+debug=true
+
+[[bin]]
+name = "bench"
+path = "src/bench.rs"
