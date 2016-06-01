@@ -17,6 +17,7 @@ license = "MIT/Apache-2.0"
 
 [dependencies]
 time = "0.1"
+num_cpus = "0.2"
 
 [profile.release]
 debug=true

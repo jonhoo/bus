@@ -1,5 +1,6 @@
 extern crate bus;
 extern crate time;
+extern crate num_cpus;
 
 use bus::Bus;
 
@@ -40,30 +41,18 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
 }
 
 fn main() {
-    let num = 10_000_000;
+    let num = 2_000_000;
 
-    println!("1 {} {:.*}ns/op",
+    println!("1 {} {:.*} μs/op",
              10,
-             3,
+             2,
              helper(10, num, 1) as f64 / num as f64);
 
-    println!("1 {} {:.*}ns/op",
-             10_000,
-             3,
-             helper(10_000, num, 1) as f64 / num as f64);
-
-    println!("2 {} {:.*}ns/op",
-             10_000,
-             3,
-             helper(10_000, num, 2) as f64 / num as f64);
-
-    println!("3 {} {:.*}ns/op",
-             10_000,
-             3,
-             helper(10_000, num, 3) as f64 / num as f64);
-
-    println!("4 {} {:.*}ns/op",
-             10_000,
-             3,
-             helper(10_000, num, 4) as f64 / num as f64);
+    for threads in 1..num_cpus::get() {
+        println!("{} {} {:.*} μs/op",
+                 threads,
+                 1_000,
+                 2,
+                 helper(1_000, num, threads) as f64 / num as f64);
+    }
 }
