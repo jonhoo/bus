@@ -25,18 +25,12 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
         })
         .collect::<Vec<_>>();
 
-    let w = Duration::new(0, 10);
     let start = time::precise_time_ns();
     for _ in 0..iter {
-        while let Err(_) = c.broadcast(false) {
-            thread::sleep(w);
-        }
+        c.broadcast(false)
     }
 
-    while let Err(_) = c.broadcast(true) {
-        thread::yield_now();
-    }
-
+    c.broadcast(true);
     for w in wait.into_iter() {
         w.join().unwrap();
     }
@@ -47,12 +41,7 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
 fn main() {
     let num = 2_000_000;
 
-    println!("1 {} {:.*} μs/op",
-             10,
-             2,
-             helper(10, num, 1) as f64 / num as f64);
-
-    for threads in 1..(num_cpus::get() + 1) {
+    for threads in 1..(num_cpus::get() + 10) {
         println!("{} {} {:.*} μs/op",
                  threads,
                  1_000,
