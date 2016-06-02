@@ -2,6 +2,14 @@ use std::sync::atomic;
 use std::sync::mpsc;
 use std::thread;
 
+use std::cell::UnsafeCell;
+use std::ops::Deref;
+use std::sync::Arc;
+
+// TODO: blocking reads
+// TODO: spin before parking (https://github.com/Amanieu/parking_lot/issues/5)
+// TODO: notify readers when writer is dropped
+
 struct Seat<T: Clone> {
     read: atomic::AtomicUsize,
     max: usize,
@@ -46,11 +54,32 @@ impl<T: Clone> Default for Seat<T> {
     }
 }
 
-pub struct Bus<T: Clone> {
+/// BusInner encapsulates data that both the writer and the readers need to access.
+struct BusInner<T: Clone> {
     ring: Vec<Seat<T>>,
     len: usize,
-
     tail: atomic::AtomicUsize,
+    leaving: mpsc::Sender<usize>,
+}
+
+// We need Sync for BusInner to share it in an Arc.
+// This is safe here as long as there is only ever one mutable reference (specifically, the one
+// held by the writer). Concurrent reads are fine as long as they follow the reader protocol (which
+// BusReader does).
+struct UnsafeBusInner<T: Clone>(UnsafeCell<BusInner<T>>);
+unsafe impl<T: Clone> Sync for UnsafeBusInner<T> {}
+
+// Make the indirection through Arc<UnsafeCell> a bit nicer to work with
+impl<T: Clone> Deref for UnsafeBusInner<T> {
+    type Target = UnsafeCell<BusInner<T>>;
+    fn deref(&self) -> &Self::Target {
+        return &self.0;
+    }
+}
+type Inner<T: Clone> = Arc<UnsafeBusInner<T>>;
+
+pub struct Bus<T: Clone> {
+    state: Inner<T>,
     readers: usize,
 
     // rleft keeps track of readers that should be skipped for each index. we must do this because
@@ -58,7 +87,7 @@ pub struct Bus<T: Clone> {
     rleft: Vec<usize>,
 
     // leaving is used by receivers to signal that they are done
-    leaving: (mpsc::Sender<usize>, mpsc::Receiver<usize>),
+    leaving: mpsc::Receiver<usize>,
 }
 
 impl<T: Clone> Bus<T> {
@@ -68,56 +97,71 @@ impl<T: Clone> Bus<T> {
         // ring buffer must have room for one padding element
         len += 1;
 
-        Bus {
+        let (leave_tx, leave_rx) = mpsc::channel();
+
+        let inner = Arc::new(UnsafeBusInner(UnsafeCell::new(BusInner {
             ring: (0..len).map(|_| Seat::default()).collect(),
-            len: len,
-
             tail: atomic::AtomicUsize::new(0),
-            readers: 0,
+            leaving: leave_tx,
+            len: len,
+        })));
 
+        Bus {
+            state: inner,
+            readers: 0,
             rleft: iter::repeat(0).take(len).collect(),
-            leaving: mpsc::channel(),
+            leaving: leave_rx,
         }
     }
 
+    #[inline(always)]
+    fn inner(&mut self) -> &mut BusInner<T> {
+        // TODO: document why this is safe
+        unsafe { &mut *self.state.get() }
+    }
+
     fn broadcast_inner(&mut self, val: T, block: bool) -> Result<(), T> {
-        let tail = self.tail.load(atomic::Ordering::Relaxed);
+        let tail = self.inner().tail.load(atomic::Ordering::Relaxed);
 
         // we want to check if the next element over is free to ensure that we always leave one
         // empty space between the head and the tail. This is necessary so that readers can
         // distinguish between an empty and a full list. If the fence seat is free, the seat at
         // tail must also be free, which is simple enough to show by induction (exercise for the
         // reader).
-        let fence = (tail + 1) % self.len;
+        let fence = (tail + 1) % self.inner().len;
 
         // scope mutable borrow of self
-        let fence_read = self.ring[fence].read.load(atomic::Ordering::Acquire);
-        if fence_read == self.ring[fence].max - self.rleft[fence] {
+        let fence_read = self.inner().ring[fence].read.load(atomic::Ordering::Acquire);
+        if fence_read == self.inner().ring[fence].max - self.rleft[fence] {
             // next one over is also free, we have a free seat!
-            let next = &mut self.ring[tail];
-            next.max = self.readers;
-            next.val = Some(val);
-            next.waiting = None;
-            next.read.store(0, atomic::Ordering::Release);
+            let readers = self.readers;
+            {
+                let next = &mut self.inner().ring[tail];
+                next.max = readers;
+                next.val = Some(val);
+                next.waiting = None;
+                next.read.store(0, atomic::Ordering::Release);
+            }
             self.rleft[tail] = 0;
             // now tell readers that they can read
-            self.tail.store((tail + 1) % self.len, atomic::Ordering::Release);
+            let len = self.inner().len;
+            self.inner().tail.store((tail + 1) % len, atomic::Ordering::Release);
             return Ok(());
         }
 
         // there's no room left, so we check if any readers have left, which might increment
         // self.rleft[tail].
-        while let Ok(mut left) = self.leaving.1.try_recv() {
+        while let Ok(mut left) = self.leaving.try_recv() {
             // a reader has left! this means that every seat between `left` and `tail-1` has max
             // set one too high. we track the number of such "missing" reads that should be ignored
             // in self.rleft, and compensate for them when looking at seat.read above.
             while left != tail {
                 self.rleft[left] += 1;
-                left = (left + 1) % self.len
+                left = (left + 1) % self.inner().len
             }
         }
 
-        if fence_read == self.ring[fence].max - self.rleft[fence] {
+        if fence_read == self.inner().ring[fence].max - self.rleft[fence] {
             // the next block is now free!
             self.broadcast_inner(val, block)
         } else if block {
@@ -125,9 +169,9 @@ impl<T: Clone> Bus<T> {
 
             // park, wait to be unparked, and retry
             // we need the atomics to ensure reader threads will see the new .waiting
-            self.ring[fence].read.load(atomic::Ordering::Acquire);
-            self.ring[fence].waiting = Some(thread::current());
-            self.ring[fence].read.fetch_add(0, atomic::Ordering::Release);
+            self.inner().ring[fence].read.load(atomic::Ordering::Acquire);
+            self.inner().ring[fence].waiting = Some(thread::current());
+            self.inner().ring[fence].read.fetch_add(0, atomic::Ordering::Release);
             thread::park_timeout(Duration::new(0, 1000));
             self.broadcast_inner(val, block)
         } else {
@@ -149,15 +193,15 @@ impl<T: Clone> Bus<T> {
         self.readers += 1;
 
         BusReader {
-            bus: self as *const Bus<T>,
-            head: self.tail.load(atomic::Ordering::Relaxed),
-            leaving: self.leaving.0.clone(),
+            bus: self.state.clone(),
+            head: self.inner().tail.load(atomic::Ordering::Relaxed),
+            leaving: self.inner().leaving.clone(),
         }
     }
 }
 
 pub struct BusReader<T: Clone> {
-    bus: *const Bus<T>,
+    bus: Inner<T>,
     head: usize,
     leaving: mpsc::Sender<usize>,
 }
@@ -165,28 +209,33 @@ pub struct BusReader<T: Clone> {
 unsafe impl<T: Clone> Send for BusReader<T> {}
 
 impl<T: Clone> BusReader<T> {
-    /// BusReader may only be used as long as the original Bus has not been moved or deallocated.
-    pub unsafe fn recv(&mut self) -> Result<T, ()> {
+    fn inner(&mut self) -> &BusInner<T> {
         // safe because we only acccess:
         //  - .tail, which is atomic
         //  - .ring.take, which is safe for concurrent read/write, since it effectively implements
         //    a RwLock on each entry.
-        // unsafe since we don't know that Bus<T> hasn't been deallocated
-        let bus = &*self.bus as &Bus<T>;
-        let tail = bus.tail.load(atomic::Ordering::Acquire);
+        unsafe { &*self.bus.get() }
+    }
+
+    pub fn recv(&mut self) -> Result<T, ()> {
+        let tail = self.inner().tail.load(atomic::Ordering::Acquire);
         if tail == self.head {
             // buffer is empty
             return Err(());
         }
 
-        let ret = bus.ring[self.head].take();
-        self.head = (self.head + 1) % bus.len;
+        let head = self.head;
+        let ret = self.inner().ring[head].take();
+        self.head = (head + 1) % self.inner().len;
         Ok(ret)
     }
 }
 
 impl<T: Clone> Drop for BusReader<T> {
+    #[allow(unused_must_use)]
     fn drop(&mut self) {
-        self.leaving.send(self.head).unwrap();
+        // we allow not checking the result here because the writer might have gone away, which
+        // would result in an error, but is okay nonetheless.
+        self.leaving.send(self.head);
     }
 }
