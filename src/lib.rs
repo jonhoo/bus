@@ -1,3 +1,6 @@
+extern crate atomic_option;
+use atomic_option::AtomicOption;
+
 use std::sync::atomic;
 use std::sync::mpsc;
 use std::thread;
@@ -10,33 +13,81 @@ use std::sync::Arc;
 // TODO: spin before parking (https://github.com/Amanieu/parking_lot/issues/5)
 // TODO: notify readers when writer is dropped
 
-struct Seat<T: Clone> {
-    read: atomic::AtomicUsize,
+struct SeatState<T: Clone> {
     max: usize,
     val: Option<T>,
-    waiting: Option<thread::Thread>,
+}
+
+struct MutSeatState<T: Clone>(UnsafeCell<SeatState<T>>);
+unsafe impl<T: Clone> Sync for MutSeatState<T> {}
+impl<T: Clone> Deref for MutSeatState<T> {
+    type Target = UnsafeCell<SeatState<T>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+struct Seat<T: Clone> {
+    read: atomic::AtomicUsize,
+    state: MutSeatState<T>,
+
+    // is the writer waiting for this seat to be emptied? needs to be atomic since both the last
+    // reader and the writer might be accessing it at the same time.
+    waiting: AtomicOption<thread::Thread>,
 }
 
 impl<T: Clone> Seat<T> {
     fn take(&self) -> T {
         let read = self.read.load(atomic::Ordering::Acquire);
 
+        // the writer will only modify this element when .read hits .max - writer.rleft[i]. we can
+        // be sure that this is not currently the case (which means it's safe for us to read)
+        // because:
+        //
+        //  - .max is set to the number of readers at the time when the write happens
+        //  - any joining readers will start at a later seat
+        //  - so, at most .max readers will call .take() on this seat this time around the buffer
+        //  - a reader must leave either *before* or *after* a call to recv. there are two cases:
+        //
+        //    - it leaves before, rleft is decremented, but .take is not called
+        //    - it leaves after, .take is called, but head has been incremented, so rleft will be
+        //      decremented for the *next* seat, not this one
+        //
+        //    so, either .take is called, and .read is incremented, or writer.rleft is incremented.
+        //    thus, for a writer to modify this element, *all* readers at the time of the previous
+        //    write to this seat must have either called .take or have left.
+        //  - since we are one of those readers, this cannot be true, so it's safe for us to assume
+        //    that there is no concurrent writer for this seat
+        let state = unsafe { &*self.state.get() };
+        assert!(read < state.max,
+                "reader hit seat with exhausted reader count");
+
+        let mut waiting = None;
+
         // NOTE
         // we must extract the value *before* we decrement the number of remaining items otherwise,
         // the object might be replaced by the time we read it!
-        let v = self.val.clone().expect("");
+        let v = if read + 1 == state.max {
+            // we're the last reader, so we may need to notify the writer there's space in the buf.
+            // can be relaxed, since the acquire at the top already guarantees that we'll see
+            // updates.
+            waiting = self.waiting.take(atomic::Ordering::Relaxed);
 
-        // let writer know that we no longer need this item
+            // since we're the last reader, no-one else will be cloning this value, so we can
+            // safely take a mutable reference, and just take the val instead of cloning it.
+            unsafe { &mut *self.state.get() }.val.take().unwrap()
+        } else {
+            state.val.clone().expect("seat that should be occupied was empty")
+        };
+
+        // let writer know that we no longer need this item.
+        // state is no longer safe to access.
+        drop(state);
         self.read.fetch_add(1, atomic::Ordering::AcqRel);
 
-        if read + 1 == self.max {
-            if let Some(ref t) = self.waiting {
-                // writer was waiting for us to finish with this
-                t.unpark();
-            }
-            // no-one else will be cloning this value, so we could just take it instead of cloning
-            // it. unfortunately, this requires having a mutable reference to the option, so we
-            // don't do it for now.
+        if let Some(t) = waiting {
+            // writer was waiting for us to finish with this
+            t.unpark();
         }
 
         return v;
@@ -47,9 +98,11 @@ impl<T: Clone> Default for Seat<T> {
     fn default() -> Self {
         Seat {
             read: atomic::AtomicUsize::new(0),
-            waiting: None,
-            max: 0,
-            val: None,
+            waiting: AtomicOption::empty(),
+            state: MutSeatState(UnsafeCell::new(SeatState {
+                max: 0,
+                val: None,
+            })),
         }
     }
 }
@@ -59,27 +112,10 @@ struct BusInner<T: Clone> {
     ring: Vec<Seat<T>>,
     len: usize,
     tail: atomic::AtomicUsize,
-    leaving: mpsc::Sender<usize>,
 }
-
-// We need Sync for BusInner to share it in an Arc.
-// This is safe here as long as there is only ever one mutable reference (specifically, the one
-// held by the writer). Concurrent reads are fine as long as they follow the reader protocol (which
-// BusReader does).
-struct UnsafeBusInner<T: Clone>(UnsafeCell<BusInner<T>>);
-unsafe impl<T: Clone> Sync for UnsafeBusInner<T> {}
-
-// Make the indirection through Arc<UnsafeCell> a bit nicer to work with
-impl<T: Clone> Deref for UnsafeBusInner<T> {
-    type Target = UnsafeCell<BusInner<T>>;
-    fn deref(&self) -> &Self::Target {
-        return &self.0;
-    }
-}
-type Inner<T: Clone> = Arc<UnsafeBusInner<T>>;
 
 pub struct Bus<T: Clone> {
-    state: Inner<T>,
+    state: Arc<BusInner<T>>,
     readers: usize,
 
     // rleft keeps track of readers that should be skipped for each index. we must do this because
@@ -87,7 +123,7 @@ pub struct Bus<T: Clone> {
     rleft: Vec<usize>,
 
     // leaving is used by receivers to signal that they are done
-    leaving: mpsc::Receiver<usize>,
+    leaving: (mpsc::Sender<usize>, mpsc::Receiver<usize>),
 }
 
 impl<T: Clone> Bus<T> {
@@ -97,81 +133,90 @@ impl<T: Clone> Bus<T> {
         // ring buffer must have room for one padding element
         len += 1;
 
-        let (leave_tx, leave_rx) = mpsc::channel();
-
-        let inner = Arc::new(UnsafeBusInner(UnsafeCell::new(BusInner {
+        let inner = Arc::new(BusInner {
             ring: (0..len).map(|_| Seat::default()).collect(),
             tail: atomic::AtomicUsize::new(0),
-            leaving: leave_tx,
             len: len,
-        })));
+        });
 
         Bus {
             state: inner,
             readers: 0,
             rleft: iter::repeat(0).take(len).collect(),
-            leaving: leave_rx,
+            leaving: mpsc::channel(),
         }
     }
 
-    #[inline(always)]
-    fn inner(&mut self) -> &mut BusInner<T> {
-        // TODO: document why this is safe
-        unsafe { &mut *self.state.get() }
-    }
-
     fn broadcast_inner(&mut self, val: T, block: bool) -> Result<(), T> {
-        let tail = self.inner().tail.load(atomic::Ordering::Relaxed);
+        let tail = self.state.tail.load(atomic::Ordering::Relaxed);
 
         // we want to check if the next element over is free to ensure that we always leave one
         // empty space between the head and the tail. This is necessary so that readers can
         // distinguish between an empty and a full list. If the fence seat is free, the seat at
         // tail must also be free, which is simple enough to show by induction (exercise for the
         // reader).
-        let fence = (tail + 1) % self.inner().len;
+        let fence = (tail + 1) % self.state.len;
+        let fence_read = self.state.ring[fence].read.load(atomic::Ordering::Acquire);
 
-        // scope mutable borrow of self
-        let fence_read = self.inner().ring[fence].read.load(atomic::Ordering::Acquire);
-        if fence_read == self.inner().ring[fence].max - self.rleft[fence] {
-            // next one over is also free, we have a free seat!
+        // unsafe here is safe because we are the only possible writer, and since we're not
+        // writing, reading must be safe
+        if fence_read == unsafe { &*self.state.ring[fence].state.get() }.max - self.rleft[fence] {
+            // next one over is free, we have a free seat!
             let readers = self.readers;
             {
-                let next = &mut self.inner().ring[tail];
-                next.max = readers;
-                next.val = Some(val);
-                next.waiting = None;
+                let next = &self.state.ring[tail];
+                // we are the only writer, so no-one else can be writing. however, since we're
+                // mutating state, we also need for there to be no readers for this to be safe. the
+                // argument for why this is the case is roughly an inverse of the argument for why
+                // the unsafe block in Seat.take() is safe.  basically, since
+                //
+                //   .read + .rleft == .max
+                //
+                // we know all readers at the time of the seat's previous write have accessed this
+                // seat. we also know that no other readers will access that seat (they must have
+                // started at later seats). thus, we are the only thread accessing this seat, and
+                // so we can safely access it as mutable.
+                let state = unsafe { &mut *next.state.get() };
+                state.max = readers;
+                state.val = Some(val);
+                next.waiting.replace(None, atomic::Ordering::Relaxed);
                 next.read.store(0, atomic::Ordering::Release);
             }
             self.rleft[tail] = 0;
             // now tell readers that they can read
-            let len = self.inner().len;
-            self.inner().tail.store((tail + 1) % len, atomic::Ordering::Release);
+            let len = self.state.len;
+            self.state.tail.store((tail + 1) % len, atomic::Ordering::Release);
             return Ok(());
         }
 
         // there's no room left, so we check if any readers have left, which might increment
         // self.rleft[tail].
-        while let Ok(mut left) = self.leaving.try_recv() {
+        while let Ok(mut left) = self.leaving.1.try_recv() {
             // a reader has left! this means that every seat between `left` and `tail-1` has max
             // set one too high. we track the number of such "missing" reads that should be ignored
             // in self.rleft, and compensate for them when looking at seat.read above.
             while left != tail {
                 self.rleft[left] += 1;
-                left = (left + 1) % self.inner().len
+                left = (left + 1) % self.state.len
             }
         }
 
-        if fence_read == self.inner().ring[fence].max - self.rleft[fence] {
+        // we're not writing, so all refs are reads, so safe
+        if fence_read == unsafe { &*self.state.ring[fence].state.get() }.max - self.rleft[fence] {
             // the next block is now free!
             self.broadcast_inner(val, block)
         } else if block {
             use std::time::Duration;
 
-            // park, wait to be unparked, and retry
-            // we need the atomics to ensure reader threads will see the new .waiting
-            self.inner().ring[fence].read.load(atomic::Ordering::Acquire);
-            self.inner().ring[fence].waiting = Some(thread::current());
-            self.inner().ring[fence].read.fetch_add(0, atomic::Ordering::Release);
+            // park and tell readers to notify on last read
+            self.state.ring[fence]
+                .waiting
+                .replace(Some(Box::new(thread::current())), atomic::Ordering::Relaxed);
+
+            // we need the atomic fetch_add to ensure reader threads will see the new .waiting
+            self.state.ring[fence].read.fetch_add(0, atomic::Ordering::Release);
+
+            // wait to be unparked, and retry
             thread::park_timeout(Duration::new(0, 1000));
             self.broadcast_inner(val, block)
         } else {
@@ -194,39 +239,31 @@ impl<T: Clone> Bus<T> {
 
         BusReader {
             bus: self.state.clone(),
-            head: self.inner().tail.load(atomic::Ordering::Relaxed),
-            leaving: self.inner().leaving.clone(),
+            head: self.state.tail.load(atomic::Ordering::Relaxed),
+            leaving: self.leaving.0.clone(),
         }
     }
 }
 
 pub struct BusReader<T: Clone> {
-    bus: Inner<T>,
+    bus: Arc<BusInner<T>>,
     head: usize,
     leaving: mpsc::Sender<usize>,
 }
 
-unsafe impl<T: Clone> Send for BusReader<T> {}
-
 impl<T: Clone> BusReader<T> {
-    fn inner(&mut self) -> &BusInner<T> {
-        // safe because we only acccess:
-        //  - .tail, which is atomic
-        //  - .ring.take, which is safe for concurrent read/write, since it effectively implements
-        //    a RwLock on each entry.
-        unsafe { &*self.bus.get() }
-    }
-
     pub fn recv(&mut self) -> Result<T, ()> {
-        let tail = self.inner().tail.load(atomic::Ordering::Acquire);
+        let tail = self.bus.tail.load(atomic::Ordering::Acquire);
         if tail == self.head {
             // buffer is empty
             return Err(());
         }
 
         let head = self.head;
-        let ret = self.inner().ring[head].take();
-        self.head = (head + 1) % self.inner().len;
+        let ret = self.bus.ring[head].take();
+
+        // safe because len is read-only
+        self.head = (head + 1) % self.bus.len;
         Ok(ret)
     }
 }
