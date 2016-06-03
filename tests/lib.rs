@@ -79,6 +79,25 @@ fn it_runs_blocked_writes() {
 }
 
 #[test]
+fn it_runs_blocked_reads() {
+    use std::thread;
+    use std::sync::mpsc;
+
+    let mut tx = Box::new(bus::Bus::new(1));
+    let mut rx = tx.add_rx();
+    // buffer is now empty
+    assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+    // start other thread that blocks
+    let c = thread::spawn(move || {
+        rx.recv().unwrap();
+    });
+    // unblock receiver by broadcasting
+    tx.broadcast(true);
+    // check that thread now finished
+    c.join().unwrap();
+}
+
+#[test]
 fn it_can_count_to_10000() {
     use std::thread;
 

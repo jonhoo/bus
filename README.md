@@ -24,7 +24,7 @@ happening for the single-consumer case. For cases where cloning is expensive, `A
 used instead.
 
 In a single-producer, single-consumer setup (which is the only one that Bus and
-`mpsc::sync_channel` both support), Bus gets ~1.5x the performance of `mpsc::sync_channel` on
+`mpsc::sync_channel` both support), Bus gets ~3x the performance of `mpsc::sync_channel` on
 my machine. YMMV. You can check your performance on Nightly using
 
 ```console
@@ -49,8 +49,8 @@ let mut rx1 = bus.add_rx();
 let mut rx2 = bus.add_rx();
 
 bus.broadcast("Hello");
-assert_eq!(rx1.try_recv(), Ok("Hello"));
-assert_eq!(rx2.try_recv(), Ok("Hello"));
+assert_eq!(rx1.recv(), Ok("Hello"));
+assert_eq!(rx2.recv(), Ok("Hello"));
 ```
 
 Multi-send, multi-consumer example
@@ -73,27 +73,12 @@ let j = thread::spawn(move || {
 // every value should be received by both receivers
 for i in 1..100 {
     // rx1
-    loop {
-        // we don't yet have blocking receive, so we receive in a loop instead
-        match rx1.try_recv() {
-            Ok(msg) => {
-                assert_eq!(msg, i);
-                break;
-            }
-            Err(..) => thread::yield_now(),
-        }
-    }
+    assert_eq!(rx1.recv(), Ok(i));
     // and rx2
-    loop {
-        match rx2.try_recv() {
-            Ok(msg) => {
-                assert_eq!(msg, i);
-                break;
-            }
-            Err(..) => thread::yield_now(),
-        }
-    }
+    assert_eq!(rx2.recv(), Ok(i));
 }
+
+j.join().unwrap();
 ```
 
 Many-to-many channel using a dispatcher
@@ -122,29 +107,12 @@ thread::spawn(move || {
 tx1.send("Hello").unwrap();
 
 // ... by both receiver rx1 ...
-loop {
-    // we don't yet have blocking receive, so we receive in a loop instead
-    match rx1.try_recv() {
-        Ok(msg) => {
-            assert_eq!(msg, "Hello");
-            break;
-        }
-        Err(..) => thread::yield_now(),
-    }
-}
+assert_eq!(rx1.recv(), Ok("Hello"));
 // ... and receiver rx2
-assert_eq!(rx2.try_recv(), Ok("Hello"));
+assert_eq!(rx2.recv(), Ok("Hello"));
 
 // same with sends on tx2
 tx2.send("world").unwrap();
-loop {
-    match rx1.try_recv() {
-        Ok(msg) => {
-            assert_eq!(msg, "world");
-            break;
-        }
-        Err(..) => thread::yield_now(),
-    }
-}
-assert_eq!(rx2.try_recv(), Ok("world"));
+assert_eq!(rx1.recv(), Ok("world"));
+assert_eq!(rx2.recv(), Ok("world"));
 ```

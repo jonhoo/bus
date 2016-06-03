@@ -18,7 +18,7 @@
 //! used instead.
 //!
 //! In a single-producer, single-consumer setup (which is the only one that Bus and
-//! `mpsc::sync_channel` both support), Bus gets ~1.5x the performance of `mpsc::sync_channel` on
+//! `mpsc::sync_channel` both support), Bus gets ~3x the performance of `mpsc::sync_channel` on
 //! my machine. YMMV. You can check your performance on Nightly using
 //!
 //! ```console
@@ -43,8 +43,8 @@
 //! let mut rx2 = bus.add_rx();
 //!
 //! bus.broadcast("Hello");
-//! assert_eq!(rx1.try_recv(), Ok("Hello"));
-//! assert_eq!(rx2.try_recv(), Ok("Hello"));
+//! assert_eq!(rx1.recv(), Ok("Hello"));
+//! assert_eq!(rx2.recv(), Ok("Hello"));
 //! ```
 //!
 //! Multi-send, multi-consumer example
@@ -67,27 +67,12 @@
 //! // every value should be received by both receivers
 //! for i in 1..100 {
 //!     // rx1
-//!     loop {
-//!         // we don't yet have blocking receive, so we receive in a loop instead
-//!         match rx1.try_recv() {
-//!             Ok(msg) => {
-//!                 assert_eq!(msg, i);
-//!                 break;
-//!             }
-//!             Err(..) => thread::yield_now(),
-//!         }
-//!     }
+//!     assert_eq!(rx1.recv(), Ok(i));
 //!     // and rx2
-//!     loop {
-//!         match rx2.try_recv() {
-//!             Ok(msg) => {
-//!                 assert_eq!(msg, i);
-//!                 break;
-//!             }
-//!             Err(..) => thread::yield_now(),
-//!         }
-//!     }
+//!     assert_eq!(rx2.recv(), Ok(i));
 //! }
+//!
+//! j.join().unwrap();
 //! ```
 //!
 //! Many-to-many channel using a dispatcher
@@ -116,31 +101,14 @@
 //! tx1.send("Hello").unwrap();
 //!
 //! // ... by both receiver rx1 ...
-//! loop {
-//!     // we don't yet have blocking receive, so we receive in a loop instead
-//!     match rx1.try_recv() {
-//!         Ok(msg) => {
-//!             assert_eq!(msg, "Hello");
-//!             break;
-//!         }
-//!         Err(..) => thread::yield_now(),
-//!     }
-//! }
+//! assert_eq!(rx1.recv(), Ok("Hello"));
 //! // ... and receiver rx2
-//! assert_eq!(rx2.try_recv(), Ok("Hello"));
+//! assert_eq!(rx2.recv(), Ok("Hello"));
 //!
 //! // same with sends on tx2
 //! tx2.send("world").unwrap();
-//! loop {
-//!     match rx1.try_recv() {
-//!         Ok(msg) => {
-//!             assert_eq!(msg, "world");
-//!             break;
-//!         }
-//!         Err(..) => thread::yield_now(),
-//!     }
-//! }
-//! assert_eq!(rx2.try_recv(), Ok("world"));
+//! assert_eq!(rx1.recv(), Ok("world"));
+//! assert_eq!(rx2.recv(), Ok("world"));
 //! ```
 
 #![cfg_attr(feature = "bench", feature(test))]
@@ -294,6 +262,10 @@ pub struct Bus<T: Clone> {
 
     // leaving is used by receivers to signal that they are done
     leaving: (mpsc::Sender<usize>, mpsc::Receiver<usize>),
+
+    // waiting is used by receivers to signal that they are waiting for new entries, and where they
+    // are waiting
+    waiting: (mpsc::Sender<(thread::Thread, usize)>, mpsc::Receiver<(thread::Thread, usize)>),
 }
 
 impl<T: Clone> Bus<T> {
@@ -319,6 +291,7 @@ impl<T: Clone> Bus<T> {
             readers: 0,
             rleft: iter::repeat(0).take(len).collect(),
             leaving: mpsc::channel(),
+            waiting: mpsc::channel(),
         }
     }
 
@@ -366,8 +339,25 @@ impl<T: Clone> Bus<T> {
             }
             self.rleft[tail] = 0;
             // now tell readers that they can read
-            let len = self.state.len;
-            self.state.tail.store((tail + 1) % len, atomic::Ordering::Release);
+            let tail = (tail + 1) % self.state.len;
+            self.state.tail.store(tail, atomic::Ordering::Release);
+
+            // unblock any blocked receivers
+            let mut add_back = Vec::with_capacity(self.readers);
+            while let Ok((t, at)) = self.waiting.1.try_recv() {
+                // the only readers we can't unblock are those that have already absorbed the
+                // broadcast we just made, since they are blocking on the *next* broadcast
+                if at == tail {
+                    add_back.push((t, at))
+                } else {
+                    t.unpark();
+                }
+            }
+            for w in add_back {
+                // fine to do here because it is guaranteed not to block
+                self.waiting.0.send(w).unwrap();
+            }
+
             return Ok(());
         }
 
@@ -450,7 +440,7 @@ impl<T: Clone> Bus<T> {
     /// bus.broadcast("Hello");
     ///
     /// // consumer present during broadcast sees update
-    /// assert_eq!(rx1.try_recv(), Ok("Hello"));
+    /// assert_eq!(rx1.recv(), Ok("Hello"));
     ///
     /// // new consumer does *not* see broadcast
     /// let mut rx2 = bus.add_rx();
@@ -458,8 +448,8 @@ impl<T: Clone> Bus<T> {
     ///
     /// // both consumers see new broadcast
     /// bus.broadcast("world");
-    /// assert_eq!(rx1.try_recv(), Ok("world"));
-    /// assert_eq!(rx2.try_recv(), Ok("world"));
+    /// assert_eq!(rx1.recv(), Ok("world"));
+    /// assert_eq!(rx2.recv(), Ok("world"));
     /// ```
     pub fn add_rx(&mut self) -> BusReader<T> {
         self.readers += 1;
@@ -468,6 +458,7 @@ impl<T: Clone> Bus<T> {
             bus: self.state.clone(),
             head: self.state.tail.load(atomic::Ordering::Relaxed),
             leaving: self.leaving.0.clone(),
+            waiting: self.waiting.0.clone(),
         }
     }
 }
@@ -485,7 +476,7 @@ impl<T: Clone> Bus<T> {
 /// let mut r1 = tx.add_rx();
 /// let r2 = tx.add_rx();
 /// assert_eq!(tx.try_broadcast(true), Ok(()));
-/// assert_eq!(r1.try_recv(), Ok(true));
+/// assert_eq!(r1.recv(), Ok(true));
 ///
 /// // the bus does not have room for another broadcast
 /// // since it knows r2 has not yet read the first broadcast
@@ -500,21 +491,36 @@ pub struct BusReader<T: Clone> {
     bus: Arc<BusInner<T>>,
     head: usize,
     leaving: mpsc::Sender<usize>,
+    waiting: mpsc::Sender<(thread::Thread, usize)>,
 }
 
 impl<T: Clone> BusReader<T> {
-    /// Attempt to read another broadcast message from the bus.
-    /// If no value could be read (i.e., the bus is empty), an `Err(mpsc::TryRecvError::Empty)` is
-    /// returned. There is **currently** no way to detect that the producer has left and the bus
-    /// has been closed.
-    pub fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
+    /// Attempts to read a broadcast from the bus.
+    ///
+    /// If the bus is empty, the behavior depends on `block`. If false,
+    /// `Err(mpsc::TryRecvError::Empty)` is returned. Otherwise, the current thread will be parked
+    /// until there is another broadcast on the bus, at which point the receive will be performed.
+    fn recv_inner(&mut self, block: bool) -> Result<T, mpsc::TryRecvError> {
         // TODO: notify readers when writer is dropped and bus is closed
 
         let tail = self.bus.tail.load(atomic::Ordering::Acquire);
         if tail == self.head {
+            use std::time::Duration;
+
             // buffer is empty
-            // TODO: blocking reads
-            return Err(mpsc::TryRecvError::Empty);
+            if !block {
+                return Err(mpsc::TryRecvError::Empty);
+            }
+
+            // park and tell writer to notify on write
+            // TODO: spin before parking (https://github.com/Amanieu/parking_lot/issues/5)
+            if let Err(..) = self.waiting.send((thread::current(), self.head)) {
+                // writer has gone away, but this is not a reliable way to check
+                // in particular, we may also have missed updates
+                unimplemented!();
+            }
+            thread::park_timeout(Duration::new(0, 1000));
+            return self.recv_inner(block);
         }
 
         let head = self.head;
@@ -523,6 +529,67 @@ impl<T: Clone> BusReader<T> {
         // safe because len is read-only
         self.head = (head + 1) % self.bus.len;
         Ok(ret)
+    }
+
+    /// Attempts to return a pending broadcast on this receiver without blocking.
+    ///
+    /// This method will never block the caller in order to wait for data to become available.
+    /// Instead, this will always return immediately with a possible option of pending data on the
+    /// channel.
+    ///
+    /// There is **currently** no way to detect that the producer has left and the bus has been
+    /// closed.
+    ///
+    /// This mehtod is useful for a flavor of "optimistic check" before deciding to block on a
+    /// receiver.
+    ///
+    /// ```rust
+    /// use bus::Bus;
+    /// use std::thread;
+    ///
+    /// let mut tx = Bus::new(10);
+    /// let mut rx = tx.add_rx();
+    ///
+    /// // spawn a thread that will broadcast at some point
+    /// let j = thread::spawn(move || {
+    ///     tx.broadcast(true);
+    /// });
+    ///
+    /// loop {
+    ///     match rx.try_recv() {
+    ///         Ok(val) => {
+    ///             assert_eq!(val, true);
+    ///             break;
+    ///         }
+    ///         Err(..) => {
+    ///             // maybe we can do other useful work here
+    ///             // or we can just busy-loop
+    ///             thread::yield_now()
+    ///         },
+    ///     }
+    /// }
+    ///
+    /// j.join().unwrap();
+    /// ```
+    pub fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
+        self.recv_inner(false)
+    }
+
+    /// Read another broadcast message from the bus, and block if none are available.
+    ///
+    /// This function will always block the current thread if there is no data available and it's
+    /// possible for more broadcasts to be sent. Once a broadcast is sent on the corresponding Bus,
+    /// then this receiver will wake up and return that message.
+    ///
+    /// There is **currently** no way to detect that the producer has left and the bus has been
+    /// closed, so this method will either return Ok or block indefinitely. This will change in the
+    /// future.
+    pub fn recv(&mut self) -> Result<T, mpsc::RecvError> {
+        if let Ok(val) = self.recv_inner(true) {
+            Ok(val)
+        } else {
+            unreachable!("blocking recv_inner can't fail");
+        }
     }
 }
 
@@ -542,12 +609,9 @@ fn bench_bus_one_to_one(b: &mut test::Bencher) {
     let mut rx = c.add_rx();
     let j = thread::spawn(move || {
         loop {
-            match rx.try_recv() {
+            match rx.recv() {
                 Ok(exit) if exit => break,
-                Err(..) => {
-                    // FIXME: could sleep here
-                    continue;
-                }
+                Err(..) => break,
                 _ => (),
             }
         }
@@ -563,12 +627,9 @@ fn bench_syncch_one_to_one(b: &mut test::Bencher) {
     let (tx, rx) = mpsc::sync_channel(100);
     let j = thread::spawn(move || {
         loop {
-            match rx.try_recv() {
+            match rx.recv() {
                 Ok(exit) if exit => break,
-                Err(..) => {
-                    // FIXME: could sleep here
-                    continue;
-                }
+                Err(..) => break,
                 _ => (),
             }
         }
