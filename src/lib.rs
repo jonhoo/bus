@@ -143,11 +143,12 @@
 //! assert_eq!(rx2.try_recv(), Ok("world"));
 //! ```
 
-#![feature(test)]
+#![cfg_attr(feature = "bench", feature(test))]
 
 extern crate atomic_option;
 use atomic_option::AtomicOption;
 
+#[cfg(feature = "bench")]
 extern crate test;
 
 use std::sync::atomic;
@@ -534,6 +535,7 @@ impl<T: Clone> Drop for BusReader<T> {
     }
 }
 
+#[cfg(feature = "bench")]
 #[bench]
 fn bench_bus_one_to_one(b: &mut test::Bencher) {
     let mut c = Bus::new(100);
@@ -555,6 +557,7 @@ fn bench_bus_one_to_one(b: &mut test::Bencher) {
     j.join().unwrap();
 }
 
+#[cfg(feature = "bench")]
 #[bench]
 fn bench_syncch_one_to_one(b: &mut test::Bencher) {
     let (tx, rx) = mpsc::sync_channel(100);
