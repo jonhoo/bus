@@ -1,13 +1,15 @@
 extern crate bus;
 
+use std::sync::mpsc;
+
 #[test]
 fn it_works() {
     let mut c = bus::Bus::new(10);
     let mut r1 = c.add_rx();
     let mut r2 = c.add_rx();
     assert_eq!(c.try_broadcast(true), Ok(()));
-    assert_eq!(r1.recv(), Ok(true));
-    assert_eq!(r2.recv(), Ok(true));
+    assert_eq!(r1.try_recv(), Ok(true));
+    assert_eq!(r2.try_recv(), Ok(true));
 }
 
 #[test]
@@ -25,7 +27,7 @@ fn it_succeeds_when_not_full() {
     let mut r1 = c.add_rx();
     assert_eq!(c.try_broadcast(true), Ok(()));
     assert_eq!(c.try_broadcast(false), Err(false));
-    assert_eq!(r1.recv(), Ok(true));
+    assert_eq!(r1.try_recv(), Ok(true));
     assert_eq!(c.try_broadcast(true), Ok(()));
 }
 
@@ -33,7 +35,7 @@ fn it_succeeds_when_not_full() {
 fn it_fails_when_empty() {
     let mut c = bus::Bus::<bool>::new(10);
     let mut r1 = c.add_rx();
-    assert_eq!(r1.recv(), Err(()));
+    assert_eq!(r1.try_recv(), Err(mpsc::TryRecvError::Empty));
 }
 
 #[test]
@@ -41,7 +43,7 @@ fn it_reads_when_full() {
     let mut c = bus::Bus::new(1);
     let mut r1 = c.add_rx();
     assert_eq!(c.try_broadcast(true), Ok(()));
-    assert_eq!(r1.recv(), Ok(true));
+    assert_eq!(r1.try_recv(), Ok(true));
 }
 
 #[test]
@@ -51,7 +53,7 @@ fn it_handles_leaves() {
     let r2 = c.add_rx();
     assert_eq!(c.try_broadcast(true), Ok(()));
     drop(r2);
-    assert_eq!(r1.recv(), Ok(true));
+    assert_eq!(r1.try_recv(), Ok(true));
     assert_eq!(c.try_broadcast(true), Ok(()));
 }
 
@@ -70,7 +72,7 @@ fn it_runs_blocked_writes() {
         c.broadcast(false); // can't let c be dropped before r1 is
     });
     // unblock sender by receiving
-    assert_eq!(r1.recv(), Ok(true));
+    assert_eq!(r1.try_recv(), Ok(true));
     // drop r1 to release other thread and safely drop c
     drop(r1);
     c.join().unwrap();
@@ -90,7 +92,7 @@ fn it_can_count_to_10000() {
 
     for i in 0..10000 {
         loop {
-            match r1.recv() {
+            match r1.try_recv() {
                 Ok(v) => {
                     assert_eq!(v, i);
                     break;
@@ -101,5 +103,5 @@ fn it_can_count_to_10000() {
     }
 
     j.join().unwrap();
-    assert_eq!(r1.recv(), Err(()));
+    assert_eq!(r1.try_recv(), Err(mpsc::TryRecvError::Empty));
 }

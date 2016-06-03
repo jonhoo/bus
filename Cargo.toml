@@ -1,8 +1,8 @@
 [package]
 name = "bus"
-version = "0.1.0"
+version = "0.2.0"
 
-description = "Provides a lock-free, bounded broadcast channel"
+description = "A lock-free, bounded, single-producer, multi-consumer, broadcast channel."
 readme = "README.md"
 
 authors = ["Jon Gjengset <jon@thesquareplanet.com>"]

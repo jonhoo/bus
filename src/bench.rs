@@ -15,7 +15,7 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
             thread::spawn(move || {
                 let w = Duration::new(0, 10);
                 loop {
-                    match rx.recv() {
+                    match rx.try_recv() {
                         Ok(true) => break,
                         Err(..) => thread::sleep(w),
                         _ => continue,
