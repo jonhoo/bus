@@ -696,7 +696,14 @@ impl<T: Clone> Drop for BusReader<T> {
     }
 }
 
+/// An iterator over messages on a receiver.
+/// This iterator will block whenever `next` is called, waiting for a new message, and `None` will
+/// be returned when the corresponding channel has been closed.
 pub struct BusIter<'a, T: 'a + Clone>(&'a mut BusReader<T>);
+
+/// An owning iterator over messages on a receiver.
+/// This iterator will block whenever `next` is called, waiting for a new message, and `None` will
+/// be returned when the corresponding bus has been closed.
 pub struct BusIntoIter<T: Clone>(BusReader<T>);
 
 impl<'a, T: Clone> IntoIterator for &'a mut BusReader<T> {
