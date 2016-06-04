@@ -679,6 +679,12 @@ impl<T: Clone> BusReader<T> {
             _ => unreachable!("blocking recv_inner can't fail"),
         }
     }
+
+    /// Returns an iterator that will block waiting for broadcasts.
+    /// It will return None when the bus has been closed (i.e., the `Bus` has been dropped).
+    pub fn iter<'a>(&'a mut self) -> BusIter<'a, T> {
+        BusIter(self)
+    }
 }
 
 impl<T: Clone> Drop for BusReader<T> {
@@ -687,6 +693,39 @@ impl<T: Clone> Drop for BusReader<T> {
         // we allow not checking the result here because the writer might have gone away, which
         // would result in an error, but is okay nonetheless.
         self.leaving.send(self.head);
+    }
+}
+
+pub struct BusIter<'a, T: 'a + Clone>(&'a mut BusReader<T>);
+pub struct BusIntoIter<T: Clone>(BusReader<T>);
+
+impl<'a, T: Clone> IntoIterator for &'a mut BusReader<T> {
+    type Item = T;
+    type IntoIter = BusIter<'a, T>;
+    fn into_iter(self) -> BusIter<'a, T> {
+        BusIter(self)
+    }
+}
+
+impl<T: Clone> IntoIterator for BusReader<T> {
+    type Item = T;
+    type IntoIter = BusIntoIter<T>;
+    fn into_iter(self) -> BusIntoIter<T> {
+        BusIntoIter(self)
+    }
+}
+
+impl<'a, T: Clone> Iterator for BusIter<'a, T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        self.0.recv().ok()
+    }
+}
+
+impl<T: Clone> Iterator for BusIntoIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        self.0.recv().ok()
     }
 }
 

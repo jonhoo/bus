@@ -47,6 +47,29 @@ fn it_reads_when_full() {
 }
 
 #[test]
+fn it_iterates() {
+    use std::thread;
+
+    let mut tx = bus::Bus::new(2);
+    let mut rx = tx.add_rx();
+    let j = thread::spawn(move || {
+        for i in 0..1000 {
+            tx.broadcast(i);
+        }
+    });
+
+    let mut ii = 0;
+    for i in rx.iter() {
+        assert_eq!(i, ii);
+        ii += 1;
+    }
+
+    j.join().unwrap();
+    assert_eq!(ii, 1000);
+    assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+}
+
+#[test]
 fn it_detects_closure() {
     let mut tx = bus::Bus::new(1);
     let mut rx = tx.add_rx();
