@@ -1,6 +1,6 @@
 [package]
 name = "bus"
-version = "0.3.0"
+version = "1.0.0"
 
 description = "A lock-free, bounded, single-producer, multi-consumer, broadcast channel."
 readme = "README.md"
