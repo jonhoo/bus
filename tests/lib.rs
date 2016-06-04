@@ -153,15 +153,7 @@ fn it_can_count_to_10000() {
     });
 
     for i in 0..10000 {
-        loop {
-            match r1.try_recv() {
-                Ok(v) => {
-                    assert_eq!(v, i);
-                    break;
-                }
-                Err(..) => thread::yield_now(),
-            }
-        }
+        assert_eq!(r1.recv(), Ok(i));
     }
 
     j.join().unwrap();
