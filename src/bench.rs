@@ -61,7 +61,7 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
 fn main() {
     let num = 2_000_000;
 
-    for threads in 1..(num_cpus::get() + 10) {
+    for threads in 1..(2 * num_cpus::get()) {
         println!("{} {} {:.*} μs/op",
                  threads,
                  1_000,
