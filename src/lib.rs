@@ -318,6 +318,7 @@ impl<T: Clone> Bus<T> {
     /// Get the expected number of reads for the given seat.
     /// This number will always be conservative, in that fewer reads may be fine. Specifically,
     /// `.rleft` may not be sufficiently up-to-date to account for all readers that have left.
+    #[inline]
     fn expected(&mut self, at: usize) -> usize {
         // since only the producer will modify the ring, and &mut self guarantees that *we* are the
         // producer, no-one is modifying the ring. Multiple read-only borrows are safe, and so the
