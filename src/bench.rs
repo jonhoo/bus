@@ -6,20 +6,23 @@ use bus::Bus;
 
 fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
     use std::thread;
-    use std::time::Duration;
 
     let mut c = Bus::new(buf);
     let wait = (0..rxs)
         .map(|_| c.add_rx())
         .map(|mut rx| {
             thread::spawn(move || {
-                let w = Duration::new(0, 10);
+                // use std::time::Duration;
+                // let w = Duration::new(0, 10);
                 loop {
-                    match rx.try_recv() {
-                        Ok(true) => break,
-                        Err(..) => thread::sleep(w),
-                        _ => continue,
+                    if let Ok(true) = rx.recv() {
+                        break;
                     }
+                    // match rx.try_recv() {
+                    // Ok(true) => break,
+                    // Err(..) => thread::sleep(w),
+                    // _ => (),
+                    // }
                 }
             })
         })

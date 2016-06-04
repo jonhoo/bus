@@ -581,9 +581,14 @@ impl<T: Clone> BusReader<T> {
     /// possible for more broadcasts to be sent. Once a broadcast is sent on the corresponding Bus,
     /// then this receiver will wake up and return that message.
     ///
-    /// There is **currently** no way to detect that the producer has left and the bus has been
-    /// closed, so this method will either return Ok or block indefinitely. This will change in the
-    /// future.
+    /// Be aware that this method is **currently** much slower than polling try_recv when there are
+    /// many receivers. This is because the producer must check if there are any waiting readers on
+    /// every write. When there are many concurrent readers, this check becomes much more
+    /// expensive, which slows down writes significantly.
+    ///
+    /// There is also no way (again, **currently**) to detect that the producer has left and the
+    /// bus has been closed, so this method will either return Ok or block indefinitely. This will
+    /// change in the future.
     pub fn recv(&mut self) -> Result<T, mpsc::RecvError> {
         if let Ok(val) = self.recv_inner(true) {
             Ok(val)
