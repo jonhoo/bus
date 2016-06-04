@@ -266,6 +266,10 @@ pub struct Bus<T: Clone> {
     // waiting is used by receivers to signal that they are waiting for new entries, and where they
     // are waiting
     waiting: (mpsc::Sender<(thread::Thread, usize)>, mpsc::Receiver<(thread::Thread, usize)>),
+
+    // cache used to keep track of threads waiting for next write.
+    // this is only here to avoid allocating one on every broadcast()
+    cache: Vec<(thread::Thread, usize)>,
 }
 
 impl<T: Clone> Bus<T> {
@@ -292,6 +296,8 @@ impl<T: Clone> Bus<T> {
             rleft: iter::repeat(0).take(len).collect(),
             leaving: mpsc::channel(),
             waiting: mpsc::channel(),
+
+            cache: Vec::new(),
         }
     }
 
@@ -351,17 +357,16 @@ impl<T: Clone> Bus<T> {
             self.state.tail.store(tail, atomic::Ordering::Release);
 
             // unblock any blocked receivers
-            let mut add_back = Vec::with_capacity(self.readers);
             while let Ok((t, at)) = self.waiting.1.try_recv() {
                 // the only readers we can't unblock are those that have already absorbed the
                 // broadcast we just made, since they are blocking on the *next* broadcast
                 if at == tail {
-                    add_back.push((t, at))
+                    self.cache.push((t, at))
                 } else {
                     t.unpark();
                 }
             }
-            for w in add_back {
+            for w in self.cache.drain(..) {
                 // fine to do here because it is guaranteed not to block
                 self.waiting.0.send(w).unwrap();
             }
