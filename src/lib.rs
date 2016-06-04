@@ -244,12 +244,14 @@ struct BusInner<T: Clone> {
     ring: Vec<Seat<T>>,
     len: usize,
     tail: atomic::AtomicUsize,
+    closed: atomic::AtomicBool,
 }
 
 /// Bus is the main interconnect for broadcast messages.
 /// It can be used to send broadcast messages, or to connect additional consumers.
-/// Note that there is **currently** no way for consumers to detect that the producer has left (and
-/// that the bus is therefore closed). Bear this in mind when using Bus.
+/// When the Bus is dropped, receivers will continue receiving any outstanding broadcast messages
+/// they would have received if the bus were not dropped. After all those messages have been
+/// received, any subsequent receive call on a receiver will return a disconnected error.
 pub struct Bus<T: Clone> {
     state: Arc<BusInner<T>>,
 
@@ -290,6 +292,7 @@ impl<T: Clone> Bus<T> {
         let inner = Arc::new(BusInner {
             ring: (0..len).map(|_| Seat::default()).collect(),
             tail: atomic::AtomicUsize::new(0),
+            closed: atomic::AtomicBool::new(false),
             len: len,
         });
 
@@ -435,9 +438,18 @@ impl<T: Clone> Bus<T> {
 
     /// Attempt to broadcast the given value to all consumers, but do not wait if bus is full.
     ///
-    /// If the bus is currently full, the given value is returned in an `Err()`.
+    ///
+    /// Attempts to broadcast a value on this bus, returning it back if it could not be sent.
+    ///
     /// Note that, in contrast to regular channels, a bus is *not* considered closed if there are
-    /// no consumers, and thus broadcasts will continue to succeed.
+    /// no consumers, and thus broadcasts will continue to succeed. Thus, a successful broadcast
+    /// occurs as long as there is room on the internal bus to store the value, or some older value
+    /// has been received by all consumers. Note that a return value of `Err` means that the data
+    /// will never be received (by any consumer), but a return value of Ok does not mean that the
+    /// data will be received by a given consumer. It is possible for a receiver to hang up
+    /// immediately after this function returns Ok.
+    ///
+    /// This method will never block the current thread.
     ///
     /// ```rust
     /// use bus::Bus;
@@ -450,10 +462,15 @@ impl<T: Clone> Bus<T> {
         self.broadcast_inner(val, false)
     }
 
-    /// Broadcast the given value to all consumers, waiting until the bus is not full if necessary.
+    /// Broadcasts a value on the bus to all consumers.
     ///
-    /// Note that, in contrast to regular channels, a bus is *not* considered closed if there are
-    /// no consumers, and thus broadcasts will continue to succeed.
+    /// This function will block until space in the internal buffer becomes available.
+    ///
+    /// Note that a successful send does not guarantee that the receiver will ever see the data if
+    /// there is a buffer on this channel. Items may be enqueued in the internal buffer for the
+    /// receiver to receive at a later time. Furthermore, in contrast to regular channels, a bus is
+    /// *not* considered closed if there are no consumers, and thus broadcasts will continue to
+    /// succeed.
     pub fn broadcast(&mut self, val: T) {
         if let Err(..) = self.broadcast_inner(val, true) {
             unreachable!("blocking broadcast_inner can't fail");
@@ -495,7 +512,18 @@ impl<T: Clone> Bus<T> {
             head: self.state.tail.load(atomic::Ordering::Relaxed),
             leaving: self.leaving.0.clone(),
             waiting: self.waiting.0.clone(),
+            closed: false,
         }
+    }
+}
+
+impl<T: Clone> Drop for Bus<T> {
+    fn drop(&mut self) {
+        self.state.closed.store(true, atomic::Ordering::Relaxed);
+        // Acquire/Release .tail to ensure other threads see new .closed
+        self.state.tail.fetch_add(0, atomic::Ordering::AcqRel);
+        // TODO: unpark receivers -- this is not absolutely necessary, since the reader's park will
+        // time out, but it would cause them to detect the closed bus somewhat faster.
     }
 }
 
@@ -528,6 +556,7 @@ pub struct BusReader<T: Clone> {
     head: usize,
     leaving: mpsc::Sender<usize>,
     waiting: mpsc::Sender<(thread::Thread, usize)>,
+    closed: bool,
 }
 
 impl<T: Clone> BusReader<T> {
@@ -537,8 +566,11 @@ impl<T: Clone> BusReader<T> {
     /// `Err(mpsc::TryRecvError::Empty)` is returned. Otherwise, the current thread will be parked
     /// until there is another broadcast on the bus, at which point the receive will be performed.
     fn recv_inner(&mut self, block: bool) -> Result<T, mpsc::TryRecvError> {
-        // TODO: notify readers when writer is dropped and bus is closed
+        if self.closed {
+            return Err(mpsc::TryRecvError::Disconnected);
+        }
 
+        let mut was_closed = false;
         loop {
             use std::time::Duration;
 
@@ -547,7 +579,23 @@ impl<T: Clone> BusReader<T> {
                 break;
             }
 
-            // buffer is empty
+            // buffer is empty, check whether it's closed.
+            // relaxed is fine since Bus.drop does an acquire/release on tail
+            if self.bus.closed.load(atomic::Ordering::Relaxed) {
+                // we need to check again that there's nothing in the bus, otherwise we might have
+                // missed a write between when we did the read of .tail above and when we read
+                // .closed here
+                if !was_closed {
+                    was_closed = true;
+                    continue;
+                }
+
+                // the bus is closed, and we didn't miss anything!
+                self.closed = true;
+                return Err(mpsc::TryRecvError::Disconnected);
+            }
+
+            // not closed, should we block?
             if !block {
                 return Err(mpsc::TryRecvError::Empty);
             }
@@ -576,8 +624,8 @@ impl<T: Clone> BusReader<T> {
     /// Instead, this will always return immediately with a possible option of pending data on the
     /// channel.
     ///
-    /// There is **currently** no way to detect that the producer has left and the bus has been
-    /// closed.
+    /// If the corresponding bus has been dropped, and all broadcasts have been received, this
+    /// method will return with a disconnected error.
     ///
     /// This mehtod is useful for a flavor of "optimistic check" before deciding to block on a
     /// receiver.
@@ -620,14 +668,15 @@ impl<T: Clone> BusReader<T> {
     /// possible for more broadcasts to be sent. Once a broadcast is sent on the corresponding Bus,
     /// then this receiver will wake up and return that message.
     ///
-    /// There is also no way (again, **currently**) to detect that the producer has left and the
-    /// bus has been closed, so this method will either return Ok or block indefinitely. This will
-    /// change in the future.
+    /// If the corresponding `Bus` has been dropped, or it is dropped while this call is blocking,
+    /// this call will wake up and return Err to indicate that no more messages can ever be
+    /// received on this channel. However, since channels are buffered, messages sent before the
+    /// disconnect will still be properly received.
     pub fn recv(&mut self) -> Result<T, mpsc::RecvError> {
-        if let Ok(val) = self.recv_inner(true) {
-            Ok(val)
-        } else {
-            unreachable!("blocking recv_inner can't fail");
+        match self.recv_inner(true) {
+            Ok(val) => Ok(val),
+            Err(mpsc::TryRecvError::Disconnected) => Err(mpsc::RecvError),
+            _ => unreachable!("blocking recv_inner can't fail"),
         }
     }
 }

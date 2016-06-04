@@ -47,6 +47,27 @@ fn it_reads_when_full() {
 }
 
 #[test]
+fn it_detects_closure() {
+    let mut tx = bus::Bus::new(1);
+    let mut rx = tx.add_rx();
+    assert_eq!(tx.try_broadcast(true), Ok(()));
+    assert_eq!(rx.try_recv(), Ok(true));
+    assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+    drop(tx);
+    assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+}
+
+#[test]
+fn it_recvs_after_close() {
+    let mut tx = bus::Bus::new(1);
+    let mut rx = tx.add_rx();
+    assert_eq!(tx.try_broadcast(true), Ok(()));
+    drop(tx);
+    assert_eq!(rx.try_recv(), Ok(true));
+    assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+}
+
+#[test]
 fn it_handles_leaves() {
     let mut c = bus::Bus::new(1);
     let mut r1 = c.add_rx();
@@ -69,7 +90,6 @@ fn it_runs_blocked_writes() {
     // start other thread that blocks
     let c = thread::spawn(move || {
         c.broadcast(false);
-        c.broadcast(false); // can't let c be dropped before r1 is
     });
     // unblock sender by receiving
     assert_eq!(r1.try_recv(), Ok(true));
@@ -122,5 +142,5 @@ fn it_can_count_to_10000() {
     }
 
     j.join().unwrap();
-    assert_eq!(r1.try_recv(), Err(mpsc::TryRecvError::Empty));
+    assert_eq!(r1.try_recv(), Err(mpsc::TryRecvError::Disconnected));
 }
