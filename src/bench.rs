@@ -4,7 +4,11 @@ extern crate num_cpus;
 
 use bus::Bus;
 
+const USE_TRY_RECV: bool = false;
+const USE_TRY_SEND: bool = false;
+
 fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
+    use std::time::Duration;
     use std::thread;
 
     let mut c = Bus::new(buf);
@@ -12,28 +16,41 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
         .map(|_| c.add_rx())
         .map(|mut rx| {
             thread::spawn(move || {
-                // use std::time::Duration;
-                // let w = Duration::new(0, 10);
+                let w = Duration::new(0, 10);
                 loop {
-                    if let Ok(true) = rx.recv() {
-                        break;
+                    if USE_TRY_RECV {
+                        match rx.try_recv() {
+                            Ok(true) => break,
+                            Err(..) => thread::sleep(w),
+                            _ => (),
+                        }
+                    } else {
+                        if let Ok(true) = rx.recv() {
+                            break;
+                        }
                     }
-                    // match rx.try_recv() {
-                    // Ok(true) => break,
-                    // Err(..) => thread::sleep(w),
-                    // _ => (),
-                    // }
                 }
             })
         })
         .collect::<Vec<_>>();
 
+    let w = Duration::new(0, 10);
+    let mut send = |v| {
+        if USE_TRY_SEND {
+            while let Err(..) = c.try_broadcast(v) {
+                thread::sleep(w);
+            }
+        } else {
+            c.broadcast(v);
+        }
+    };
+
     let start = time::precise_time_ns();
     for _ in 0..iter {
-        c.broadcast(false)
+        send(false);
     }
 
-    c.broadcast(true);
+    send(true);
     for w in wait.into_iter() {
         w.join().unwrap();
     }
