@@ -18,7 +18,7 @@
 //! used instead.
 //!
 //! In a single-producer, single-consumer setup (which is the only one that Bus and
-//! `mpsc::sync_channel` both support), Bus gets ~3x the performance of `mpsc::sync_channel` on
+//! `mpsc::sync_channel` both support), Bus gets ~1.5x the performance of `mpsc::sync_channel` on
 //! my machine. YMMV. You can check your performance on Nightly using
 //!
 //! ```console
@@ -267,6 +267,9 @@ pub struct Bus<T: Clone> {
     // are waiting
     waiting: (mpsc::Sender<(thread::Thread, usize)>, mpsc::Receiver<(thread::Thread, usize)>),
 
+    // channel used to communicate to unparker that a given thread should be woken up
+    unpark: mpsc::Sender<thread::Thread>,
+
     // cache used to keep track of threads waiting for next write.
     // this is only here to avoid allocating one on every broadcast()
     cache: Vec<(thread::Thread, usize)>,
@@ -290,12 +293,23 @@ impl<T: Clone> Bus<T> {
             len: len,
         });
 
+        // we run a separate thread responsible for unparking
+        // so we don't have to wait for unpark() to return in broadcast_inner
+        // sending on a channel without contention is cheap, unparking is not
+        let (unpark_tx, unpark_rx) = mpsc::channel::<thread::Thread>();
+        thread::spawn(move || {
+            for t in unpark_rx.iter() {
+                t.unpark();
+            }
+        });
+
         Bus {
             state: inner,
             readers: 0,
             rleft: iter::repeat(0).take(len).collect(),
             leaving: mpsc::channel(),
             waiting: mpsc::channel(),
+            unpark: unpark_tx,
 
             cache: Vec::new(),
         }
@@ -407,7 +421,7 @@ impl<T: Clone> Bus<T> {
             if at == tail {
                 self.cache.push((t, at))
             } else {
-                t.unpark();
+                self.unpark.send(t).unwrap();
             }
         }
         for w in self.cache.drain(..) {
@@ -604,11 +618,6 @@ impl<T: Clone> BusReader<T> {
     /// This function will always block the current thread if there is no data available and it's
     /// possible for more broadcasts to be sent. Once a broadcast is sent on the corresponding Bus,
     /// then this receiver will wake up and return that message.
-    ///
-    /// Be aware that this method is **currently** much slower than polling try_recv when there are
-    /// many receivers. This is because the producer must check if there are any waiting readers on
-    /// every write. When there are many concurrent readers, this check becomes much more
-    /// expensive, which slows down writes significantly.
     ///
     /// There is also no way (again, **currently**) to detect that the producer has left and the
     /// bus has been closed, so this method will either return Ok or block indefinitely. This will
