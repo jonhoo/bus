@@ -327,87 +327,95 @@ impl<T: Clone> Bus<T> {
         // tail must also be free, which is simple enough to show by induction (exercise for the
         // reader).
         let fence = (tail + 1) % self.state.len;
-        let fence_read = self.state.ring[fence].read.load(atomic::Ordering::Acquire);
+        loop {
+            let fence_read = self.state.ring[fence].read.load(atomic::Ordering::Acquire);
 
-        if fence_read == self.expected(fence) {
-            // next one over is free, we have a free seat!
-            let readers = self.readers;
-            {
-                let next = &self.state.ring[tail];
-                // we are the only writer, so no-one else can be writing. however, since we're
-                // mutating state, we also need for there to be no readers for this to be safe. the
-                // argument for why this is the case is roughly an inverse of the argument for why
-                // the unsafe block in Seat.take() is safe.  basically, since
-                //
-                //   .read + .rleft == .max
-                //
-                // we know all readers at the time of the seat's previous write have accessed this
-                // seat. we also know that no other readers will access that seat (they must have
-                // started at later seats). thus, we are the only thread accessing this seat, and
-                // so we can safely access it as mutable.
-                let state = unsafe { &mut *next.state.get() };
-                state.max = readers;
-                state.val = Some(val);
-                next.waiting.replace(None, atomic::Ordering::Relaxed);
-                next.read.store(0, atomic::Ordering::Release);
+            // is there room left in the ring?
+            if fence_read == self.expected(fence) {
+                break;
             }
-            self.rleft[tail] = 0;
-            // now tell readers that they can read
-            let tail = (tail + 1) % self.state.len;
-            self.state.tail.store(tail, atomic::Ordering::Release);
 
-            // unblock any blocked receivers
-            while let Ok((t, at)) = self.waiting.1.try_recv() {
-                // the only readers we can't unblock are those that have already absorbed the
-                // broadcast we just made, since they are blocking on the *next* broadcast
-                if at == tail {
-                    self.cache.push((t, at))
-                } else {
-                    t.unpark();
+            // no!
+            // let's check if any readers have left, which might increment self.rleft[tail].
+            while let Ok(mut left) = self.leaving.1.try_recv() {
+                // a reader has left! this means that every seat between `left` and `tail-1`
+                // has max set one too high. we track the number of such "missing" reads that
+                // should be ignored in self.rleft, and compensate for them when looking at
+                // seat.read above.
+                while left != tail {
+                    self.rleft[left] += 1;
+                    left = (left + 1) % self.state.len
                 }
             }
-            for w in self.cache.drain(..) {
-                // fine to do here because it is guaranteed not to block
-                self.waiting.0.send(w).unwrap();
+
+            // is the fence block now free?
+            if fence_read == self.expected(fence) {
+                // yes! go ahead and write!
+                break;
+            } else if block {
+                // no, so block
+                use std::time::Duration;
+
+                // park and tell readers to notify on last read
+                // TODO: spin before parking (https://github.com/Amanieu/parking_lot/issues/5)
+                self.state.ring[fence]
+                    .waiting
+                    .replace(Some(Box::new(thread::current())), atomic::Ordering::Relaxed);
+
+                // need the atomic fetch_add to ensure reader threads will see the new .waiting
+                self.state.ring[fence].read.fetch_add(0, atomic::Ordering::Release);
+
+                // wait to be unparked, and retry
+                thread::park_timeout(Duration::new(0, 1000));
+                continue;
+            } else {
+                // no, and blocking isn't allowed, so return an error
+                return Err(val);
             }
-
-            return Ok(());
         }
 
-        // there's no room left, so we check if any readers have left, which might increment
-        // self.rleft[tail].
-        while let Ok(mut left) = self.leaving.1.try_recv() {
-            // a reader has left! this means that every seat between `left` and `tail-1` has max
-            // set one too high. we track the number of such "missing" reads that should be ignored
-            // in self.rleft, and compensate for them when looking at seat.read above.
-            while left != tail {
-                self.rleft[left] += 1;
-                left = (left + 1) % self.state.len
+        // next one over is free, we have a free seat!
+        let readers = self.readers;
+        {
+            let next = &self.state.ring[tail];
+            // we are the only writer, so no-one else can be writing. however, since we're
+            // mutating state, we also need for there to be no readers for this to be safe. the
+            // argument for why this is the case is roughly an inverse of the argument for why
+            // the unsafe block in Seat.take() is safe.  basically, since
+            //
+            //   .read + .rleft == .max
+            //
+            // we know all readers at the time of the seat's previous write have accessed this
+            // seat. we also know that no other readers will access that seat (they must have
+            // started at later seats). thus, we are the only thread accessing this seat, and
+            // so we can safely access it as mutable.
+            let state = unsafe { &mut *next.state.get() };
+            state.max = readers;
+            state.val = Some(val);
+            next.waiting.replace(None, atomic::Ordering::Relaxed);
+            next.read.store(0, atomic::Ordering::Release);
+        }
+        self.rleft[tail] = 0;
+        // now tell readers that they can read
+        let tail = (tail + 1) % self.state.len;
+        self.state.tail.store(tail, atomic::Ordering::Release);
+
+        // unblock any blocked receivers
+        while let Ok((t, at)) = self.waiting.1.try_recv() {
+            // the only readers we can't unblock are those that have already absorbed the
+            // broadcast we just made, since they are blocking on the *next* broadcast
+            if at == tail {
+                self.cache.push((t, at))
+            } else {
+                t.unpark();
             }
         }
-
-        // is the fence block now free?
-        if fence_read == self.expected(fence) {
-            // yes, so the next block is now free!
-            self.broadcast_inner(val, block)
-        } else if block {
-            use std::time::Duration;
-
-            // park and tell readers to notify on last read
-            // TODO: spin before parking (https://github.com/Amanieu/parking_lot/issues/5)
-            self.state.ring[fence]
-                .waiting
-                .replace(Some(Box::new(thread::current())), atomic::Ordering::Relaxed);
-
-            // we need the atomic fetch_add to ensure reader threads will see the new .waiting
-            self.state.ring[fence].read.fetch_add(0, atomic::Ordering::Release);
-
-            // wait to be unparked, and retry
-            thread::park_timeout(Duration::new(0, 1000));
-            self.broadcast_inner(val, block)
-        } else {
-            Err(val)
+        for w in self.cache.drain(..) {
+            // fine to do here because it is guaranteed not to block
+            self.waiting.0.send(w).unwrap();
         }
+
+        Ok(())
     }
 
     /// Attempt to broadcast the given value to all consumers, but do not wait if bus is full.
@@ -516,9 +524,13 @@ impl<T: Clone> BusReader<T> {
     fn recv_inner(&mut self, block: bool) -> Result<T, mpsc::TryRecvError> {
         // TODO: notify readers when writer is dropped and bus is closed
 
-        let tail = self.bus.tail.load(atomic::Ordering::Acquire);
-        if tail == self.head {
+        loop {
             use std::time::Duration;
+
+            let tail = self.bus.tail.load(atomic::Ordering::Acquire);
+            if tail != self.head {
+                break;
+            }
 
             // buffer is empty
             if !block {
@@ -533,7 +545,6 @@ impl<T: Clone> BusReader<T> {
                 unimplemented!();
             }
             thread::park_timeout(Duration::new(0, 1000));
-            return self.recv_inner(block);
         }
 
         let head = self.head;
