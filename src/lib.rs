@@ -295,6 +295,16 @@ impl<T: Clone> Bus<T> {
         }
     }
 
+    /// Get the expected number of reads for the given seat.
+    /// This number will always be conservative, in that fewer reads may be fine. Specifically,
+    /// `.rleft` may not be sufficiently up-to-date to account for all readers that have left.
+    fn expected(&mut self, at: usize) -> usize {
+        // since only the producer will modify the ring, and &mut self guarantees that *we* are the
+        // producer, no-one is modifying the ring. Multiple read-only borrows are safe, and so the
+        // cast below is safe.
+        unsafe { &*self.state.ring[at].state.get() }.max - self.rleft[at]
+    }
+
     /// Attempts to place the given value on the bus.
     ///
     /// If the bus is full, the behavior depends on `block`. If false, the value given is returned
@@ -313,9 +323,7 @@ impl<T: Clone> Bus<T> {
         let fence = (tail + 1) % self.state.len;
         let fence_read = self.state.ring[fence].read.load(atomic::Ordering::Acquire);
 
-        // unsafe here is safe because we are the only possible writer, and since we're not
-        // writing, reading must be safe
-        if fence_read == unsafe { &*self.state.ring[fence].state.get() }.max - self.rleft[fence] {
+        if fence_read == self.expected(fence) {
             // next one over is free, we have a free seat!
             let readers = self.readers;
             {
@@ -373,9 +381,9 @@ impl<T: Clone> Bus<T> {
             }
         }
 
-        // we're not writing, so all refs are reads, so safe
-        if fence_read == unsafe { &*self.state.ring[fence].state.get() }.max - self.rleft[fence] {
-            // the next block is now free!
+        // is the fence block now free?
+        if fence_read == self.expected(fence) {
+            // yes, so the next block is now free!
             self.broadcast_inner(val, block)
         } else if block {
             use std::time::Duration;
