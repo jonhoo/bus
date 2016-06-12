@@ -7,7 +7,7 @@ use bus::Bus;
 const USE_TRY_RECV: bool = false;
 const USE_TRY_SEND: bool = false;
 
-fn helper(buf: usize, iter: usize, rxs: usize) -> f64 {
+fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
     use std::thread;
 
     let mut c = Bus::new(buf);
@@ -55,16 +55,17 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> f64 {
     }
 
     let dur = start.elapsed();
-    (dur.as_secs() as f64 * 1000_000.0) + (dur.subsec_nanos() as f64 / 1000_000.0)
+    (dur.as_secs() * 1000_000) + (dur.subsec_nanos() / 1000) as u64
 }
 
 fn main() {
     let num = 2_000_000;
 
     for threads in 1..(2 * num_cpus::get()) {
-        println!("{} {:.*} μs/op",
+        println!("{} {} {:.*} μs/op",
                  threads,
+                 1_000,
                  2,
-                 helper(1_000, num, threads) / num as f64);
+                 helper(1_000, num, threads) as f64 / num as f64);
     }
 }
