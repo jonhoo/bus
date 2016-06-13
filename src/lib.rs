@@ -111,6 +111,8 @@
 //! assert_eq!(rx2.recv(), Ok("world"));
 //! ```
 
+#![deny(missing_docs)]
+
 #![cfg_attr(feature = "bench", feature(test))]
 
 extern crate atomic_option;
