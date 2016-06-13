@@ -1,14 +1,13 @@
 extern crate bus;
-extern crate time;
 extern crate num_cpus;
 
+use std::time::{Duration, Instant};
 use bus::Bus;
 
 const USE_TRY_RECV: bool = false;
 const USE_TRY_SEND: bool = false;
 
 fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
-    use std::time::Duration;
     use std::thread;
 
     let mut c = Bus::new(buf);
@@ -45,7 +44,7 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
         }
     };
 
-    let start = time::precise_time_ns();
+    let start = Instant::now();
     for _ in 0..iter {
         send(false);
     }
@@ -55,7 +54,8 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
         w.join().unwrap();
     }
 
-    time::precise_time_ns() - start
+    let dur = start.elapsed();
+    (dur.as_secs() * 1000_000) + (dur.subsec_nanos() / 1000) as u64
 }
 
 fn main() {
