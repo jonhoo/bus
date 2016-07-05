@@ -362,6 +362,7 @@ impl<T: Clone> Bus<T> {
                 // has max set one too high. we track the number of such "missing" reads that
                 // should be ignored in self.rleft, and compensate for them when looking at
                 // seat.read above.
+                self.readers -= 1;
                 while left != tail {
                     self.rleft[left] += 1;
                     left = (left + 1) % self.state.len

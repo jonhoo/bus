@@ -159,3 +159,41 @@ fn it_can_count_to_10000() {
     j.join().unwrap();
     assert_eq!(r1.try_recv(), Err(mpsc::TryRecvError::Disconnected));
 }
+
+
+#[test]
+fn test_busy() {
+    use std::thread;
+
+    let mut bus = bus::Bus::new(1);
+
+    let mut rx1 = bus.add_rx();
+    let t1 = thread::spawn(move || {
+        for _ in 0..5 {
+            rx1.recv().unwrap();
+        }
+        drop(rx1);
+    });
+
+    let mut rx2 = bus.add_rx();
+    let t2 = thread::spawn(move || {
+        for _ in 0..10 {
+            rx2.recv().unwrap();
+        }
+        drop(rx2);
+    });
+
+    std::thread::sleep_ms(500);
+
+    for i in 0..25 {
+        std::thread::sleep_ms(500);
+        match bus.try_broadcast(i) {
+            Ok(_) => (),
+            Err(e) => println!("Broadcast failed {}", e),
+        }
+    }
+
+    t1.join().unwrap();
+    t2.join().unwrap();
+    assert!(true);
+}
