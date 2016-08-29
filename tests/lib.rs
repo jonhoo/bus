@@ -1,6 +1,7 @@
 extern crate bus;
 
 use std::sync::mpsc;
+use std::time;
 
 #[test]
 fn it_works() {
@@ -165,8 +166,10 @@ fn it_can_count_to_10000() {
 fn test_busy() {
     use std::thread;
 
+    // start a bus with limited space
     let mut bus = bus::Bus::new(1);
 
+    // first receiver only receives 5 items
     let mut rx1 = bus.add_rx();
     let t1 = thread::spawn(move || {
         for _ in 0..5 {
@@ -175,6 +178,7 @@ fn test_busy() {
         drop(rx1);
     });
 
+    // second receiver receives 10 items
     let mut rx2 = bus.add_rx();
     let t2 = thread::spawn(move || {
         for _ in 0..10 {
@@ -183,16 +187,19 @@ fn test_busy() {
         drop(rx2);
     });
 
-    std::thread::sleep_ms(500);
+    // let receivers start
+    std::thread::sleep(time::Duration::from_millis(500));
 
+    // try to send 25 items -- should work fine
     for i in 0..25 {
-        std::thread::sleep_ms(500);
+        std::thread::sleep(time::Duration::from_millis(100));
         match bus.try_broadcast(i) {
             Ok(_) => (),
             Err(e) => println!("Broadcast failed {}", e),
         }
     }
 
+    // done sending -- wait for receivers (which should already be done)
     t1.join().unwrap();
     t2.join().unwrap();
     assert!(true);

@@ -18,7 +18,7 @@
 //! used instead.
 //!
 //! In a single-producer, single-consumer setup (which is the only one that Bus and
-//! `mpsc::sync_channel` both support), Bus gets ~1.5x the performance of `mpsc::sync_channel` on
+//! `mpsc::sync_channel` both support), Bus gets ~2x the performance of `mpsc::sync_channel` on
 //! my machine. YMMV. You can check your performance on Nightly using
 //!
 //! ```console
@@ -117,6 +117,9 @@
 
 extern crate atomic_option;
 use atomic_option::AtomicOption;
+
+extern crate parking_lot_core;
+use parking_lot_core::SpinWait;
 
 #[cfg(feature = "bench")]
 extern crate test;
@@ -347,6 +350,9 @@ impl<T: Clone> Bus<T> {
         // tail must also be free, which is simple enough to show by induction (exercise for the
         // reader).
         let fence = (tail + 1) % self.state.len;
+
+        // to avoid parking when a slot frees up quickly, we use an exponential back-off SpinWait.
+        let mut sw = SpinWait::new();
         loop {
             let fence_read = self.state.ring[fence].read.load(atomic::Ordering::Acquire);
 
@@ -386,8 +392,10 @@ impl<T: Clone> Bus<T> {
                 // need the atomic fetch_add to ensure reader threads will see the new .waiting
                 self.state.ring[fence].read.fetch_add(0, atomic::Ordering::Release);
 
-                // wait to be unparked, and retry
-                thread::park_timeout(Duration::new(0, 1000));
+                if !sw.spin() {
+                    // not likely to get a slow soon -- wait to be unparked instead
+                    thread::park_timeout(Duration::new(0, 1000));
+                }
                 continue;
             } else {
                 // no, and blocking isn't allowed, so return an error
@@ -574,6 +582,7 @@ impl<T: Clone> BusReader<T> {
         }
 
         let mut was_closed = false;
+        let mut sw = SpinWait::new();
         loop {
             use std::time::Duration;
 
@@ -610,7 +619,10 @@ impl<T: Clone> BusReader<T> {
                 // in particular, we may also have missed updates
                 unimplemented!();
             }
-            thread::park_timeout(Duration::new(0, 1000));
+
+            if !sw.spin() {
+                thread::park_timeout(Duration::new(0, 1000));
+            }
         }
 
         let head = self.head;

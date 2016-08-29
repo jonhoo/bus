@@ -24,7 +24,7 @@ happening for the single-consumer case. For cases where cloning is expensive, `A
 used instead.
 
 In a single-producer, single-consumer setup (which is the only one that Bus and
-`mpsc::sync_channel` both support), Bus gets ~1.5x the performance of `mpsc::sync_channel` on
+`mpsc::sync_channel` both support), Bus gets ~2x the performance of `mpsc::sync_channel` on
 my machine. YMMV. You can check your performance on Nightly using
 
 ```console
