@@ -393,8 +393,10 @@ impl<T: Clone> Bus<T> {
                 self.state.ring[fence].read.fetch_add(0, atomic::Ordering::Release);
 
                 if !sw.spin() {
-                    // not likely to get a slow soon -- wait to be unparked instead
-                    thread::park_timeout(Duration::new(0, 1000));
+                    // not likely to get a slot soon -- wait to be unparked instead.
+                    // note that we *need* to wait, because there are some cases in which we
+                    // *won't* be unparked even though a slot has opened up.
+                    thread::park_timeout(Duration::new(0, 100000));
                 }
                 continue;
             } else {
@@ -621,7 +623,7 @@ impl<T: Clone> BusReader<T> {
             }
 
             if !sw.spin() {
-                thread::park_timeout(Duration::new(0, 1000));
+                thread::park_timeout(Duration::new(0, 100000));
             }
         }
 
