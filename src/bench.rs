@@ -1,5 +1,6 @@
 extern crate bus;
 extern crate num_cpus;
+extern crate futures;
 
 use std::time::{Duration, Instant};
 use bus::Bus;
@@ -15,17 +16,24 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
         .map(|_| c.add_rx())
         .map(|mut rx| {
             thread::spawn(move || {
+                use futures::stream::Stream;
                 let w = Duration::new(0, 10);
-                loop {
-                    if USE_TRY_RECV {
-                        match rx.try_recv() {
-                            Ok(true) => break,
-                            Err(..) => thread::sleep(w),
+                if USE_TRY_RECV {
+                    loop {
+                        match rx.poll() {
+                            Ok(futures::Async::Ready(Some(true))) => break,
+                            Ok(futures::Async::Ready(None)) => break,
+                            Ok(futures::Async::NotReady) => thread::sleep(w),
                             _ => (),
                         }
-                    } else {
-                        if let Ok(true) = rx.recv() {
-                            break;
+                    }
+                } else {
+                    let mut rx = rx.wait();
+                    loop {
+                        match rx.next() {
+                            Some(Ok(true)) => break,
+                            None => break,
+                            _ => (),
                         }
                     }
                 }

@@ -121,6 +121,8 @@ use atomic_option::AtomicOption;
 extern crate parking_lot_core;
 use parking_lot_core::SpinWait;
 
+extern crate futures;
+
 #[cfg(feature = "bench")]
 extern crate test;
 
@@ -128,6 +130,7 @@ use std::sync::atomic;
 use std::sync::mpsc;
 use std::thread;
 
+use std::marker::PhantomData;
 use std::cell::UnsafeCell;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -272,14 +275,14 @@ pub struct Bus<T: Clone> {
 
     // waiting is used by receivers to signal that they are waiting for new entries, and where they
     // are waiting
-    waiting: (mpsc::Sender<(thread::Thread, usize)>, mpsc::Receiver<(thread::Thread, usize)>),
+    waiting: (mpsc::Sender<(futures::task::Task, usize)>, mpsc::Receiver<(futures::task::Task, usize)>),
 
     // channel used to communicate to unparker that a given thread should be woken up
-    unpark: mpsc::Sender<thread::Thread>,
+    unpark: mpsc::Sender<futures::task::Task>,
 
     // cache used to keep track of threads waiting for next write.
     // this is only here to avoid allocating one on every broadcast()
-    cache: Vec<(thread::Thread, usize)>,
+    cache: Vec<(futures::task::Task, usize)>,
 }
 
 impl<T: Clone> Bus<T> {
@@ -304,7 +307,7 @@ impl<T: Clone> Bus<T> {
         // we run a separate thread responsible for unparking
         // so we don't have to wait for unpark() to return in broadcast_inner
         // sending on a channel without contention is cheap, unparking is not
-        let (unpark_tx, unpark_rx) = mpsc::channel::<thread::Thread>();
+        let (unpark_tx, unpark_rx) = mpsc::channel::<futures::task::Task>();
         thread::spawn(move || {
             for t in unpark_rx.iter() {
                 t.unpark();
@@ -517,7 +520,16 @@ impl<T: Clone> Bus<T> {
     /// assert_eq!(rx1.recv(), Ok("world"));
     /// assert_eq!(rx2.recv(), Ok("world"));
     /// ```
-    pub fn add_rx(&mut self) -> BusReader<T> {
+    pub fn add_rx(&mut self) -> BusReader<T, ()> {
+        self.add_rxe()
+    }
+
+    /// Add a new consumer to this bus with a custom `Future` error.
+    ///
+    /// This method is identical to `add_rx`, but the resulting `BusReader` will implement a
+    /// `futures::Stream` whose error type is `E`. This is possible since the `BusReader` will
+    /// never actually produce the error type.
+    pub fn add_rxe<E>(&mut self) -> BusReader<T, E> {
         self.readers += 1;
 
         BusReader {
@@ -526,6 +538,7 @@ impl<T: Clone> Bus<T> {
             leaving: self.leaving.0.clone(),
             waiting: self.waiting.0.clone(),
             closed: false,
+            phantom: PhantomData,
         }
     }
 }
@@ -564,30 +577,34 @@ impl<T: Clone> Drop for Bus<T> {
 /// drop(r2);
 /// assert_eq!(tx.try_broadcast(true), Ok(()));
 /// ```
-pub struct BusReader<T: Clone> {
+pub struct BusReader<T: Clone, E> {
     bus: Arc<BusInner<T>>,
     head: usize,
     leaving: mpsc::Sender<usize>,
-    waiting: mpsc::Sender<(thread::Thread, usize)>,
+    waiting: mpsc::Sender<(futures::task::Task, usize)>,
     closed: bool,
+    phantom: PhantomData<E>,
 }
 
-impl<T: Clone> BusReader<T> {
-    /// Attempts to read a broadcast from the bus.
+impl<T: Clone, E> futures::stream::Stream for BusReader<T, E> {
+    type Item = T;
+    type Error = E;
+
+    /// Attempts to return a pending broadcast on this receiver.
     ///
-    /// If the bus is empty, the behavior depends on `block`. If false,
-    /// `Err(mpsc::TryRecvError::Empty)` is returned. Otherwise, the current thread will be parked
-    /// until there is another broadcast on the bus, at which point the receive will be performed.
-    fn recv_inner(&mut self, block: bool) -> Result<T, mpsc::TryRecvError> {
+    /// This method will never block the caller in order to wait for data to become available.
+    /// Instead, this will always return immediately, reporting either that no data is available,
+    /// or that some data has been received. If no data is available, and the sender has not yet
+    /// gone away, this method will park the current future's task, and unpark it when data may be
+    /// available. Since channels are buffered, even if the sender has gone away, messages sent
+    /// before the disconnect will still be properly received.
+    fn poll(&mut self) -> futures::Poll<Option<Self::Item>, Self::Error> {
         if self.closed {
-            return Err(mpsc::TryRecvError::Disconnected);
+            return Ok(futures::Async::Ready(None));
         }
 
         let mut was_closed = false;
-        let mut sw = SpinWait::new();
         loop {
-            use std::time::Duration;
-
             let tail = self.bus.tail.load(atomic::Ordering::Acquire);
             if tail != self.head {
                 break;
@@ -606,25 +623,18 @@ impl<T: Clone> BusReader<T> {
 
                 // the bus is closed, and we didn't miss anything!
                 self.closed = true;
-                return Err(mpsc::TryRecvError::Disconnected);
+                return Ok(futures::Async::Ready(None));
             }
 
-            // not closed, should we block?
-            if !block {
-                return Err(mpsc::TryRecvError::Empty);
-            }
-
-            // park and tell writer to notify on write
-            // TODO: spin before parking (https://github.com/Amanieu/parking_lot/issues/5)
-            if let Err(..) = self.waiting.send((thread::current(), self.head)) {
+            // nothing new to read
+            // we would have blocked, but instead park current task and return NotReady
+            let task = futures::task::park();
+            if let Err(..) = self.waiting.send((task, self.head)) {
                 // writer has gone away, but this is not a reliable way to check
                 // in particular, we may also have missed updates
                 unimplemented!();
             }
-
-            if !sw.spin() {
-                thread::park_timeout(Duration::new(0, 100000));
-            }
+            return Ok(futures::Async::NotReady);
         }
 
         let head = self.head;
@@ -632,79 +642,11 @@ impl<T: Clone> BusReader<T> {
 
         // safe because len is read-only
         self.head = (head + 1) % self.bus.len;
-        Ok(ret)
-    }
-
-    /// Attempts to return a pending broadcast on this receiver without blocking.
-    ///
-    /// This method will never block the caller in order to wait for data to become available.
-    /// Instead, this will always return immediately with a possible option of pending data on the
-    /// channel.
-    ///
-    /// If the corresponding bus has been dropped, and all broadcasts have been received, this
-    /// method will return with a disconnected error.
-    ///
-    /// This mehtod is useful for a flavor of "optimistic check" before deciding to block on a
-    /// receiver.
-    ///
-    /// ```rust
-    /// use bus::Bus;
-    /// use std::thread;
-    ///
-    /// let mut tx = Bus::new(10);
-    /// let mut rx = tx.add_rx();
-    ///
-    /// // spawn a thread that will broadcast at some point
-    /// let j = thread::spawn(move || {
-    ///     tx.broadcast(true);
-    /// });
-    ///
-    /// loop {
-    ///     match rx.try_recv() {
-    ///         Ok(val) => {
-    ///             assert_eq!(val, true);
-    ///             break;
-    ///         }
-    ///         Err(..) => {
-    ///             // maybe we can do other useful work here
-    ///             // or we can just busy-loop
-    ///             thread::yield_now()
-    ///         },
-    ///     }
-    /// }
-    ///
-    /// j.join().unwrap();
-    /// ```
-    pub fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
-        self.recv_inner(false)
-    }
-
-    /// Read another broadcast message from the bus, and block if none are available.
-    ///
-    /// This function will always block the current thread if there is no data available and it's
-    /// possible for more broadcasts to be sent. Once a broadcast is sent on the corresponding Bus,
-    /// then this receiver will wake up and return that message.
-    ///
-    /// If the corresponding `Bus` has been dropped, or it is dropped while this call is blocking,
-    /// this call will wake up and return Err to indicate that no more messages can ever be
-    /// received on this channel. However, since channels are buffered, messages sent before the
-    /// disconnect will still be properly received.
-    pub fn recv(&mut self) -> Result<T, mpsc::RecvError> {
-        match self.recv_inner(true) {
-            Ok(val) => Ok(val),
-            Err(mpsc::TryRecvError::Disconnected) => Err(mpsc::RecvError),
-            _ => unreachable!("blocking recv_inner can't fail"),
-        }
-    }
-
-    /// Returns an iterator that will block waiting for broadcasts.
-    /// It will return None when the bus has been closed (i.e., the `Bus` has been dropped).
-    pub fn iter<'a>(&'a mut self) -> BusIter<'a, T> {
-        BusIter(self)
+        Ok(futures::Async::Ready(Some(ret)))
     }
 }
 
-impl<T: Clone> Drop for BusReader<T> {
+impl<T: Clone, E> Drop for BusReader<T, E> {
     #[allow(unused_must_use)]
     fn drop(&mut self) {
         // we allow not checking the result here because the writer might have gone away, which
@@ -713,56 +655,19 @@ impl<T: Clone> Drop for BusReader<T> {
     }
 }
 
-/// An iterator over messages on a receiver.
-/// This iterator will block whenever `next` is called, waiting for a new message, and `None` will
-/// be returned when the corresponding channel has been closed.
-pub struct BusIter<'a, T: 'a + Clone>(&'a mut BusReader<T>);
-
-/// An owning iterator over messages on a receiver.
-/// This iterator will block whenever `next` is called, waiting for a new message, and `None` will
-/// be returned when the corresponding bus has been closed.
-pub struct BusIntoIter<T: Clone>(BusReader<T>);
-
-impl<'a, T: Clone> IntoIterator for &'a mut BusReader<T> {
-    type Item = T;
-    type IntoIter = BusIter<'a, T>;
-    fn into_iter(self) -> BusIter<'a, T> {
-        BusIter(self)
-    }
-}
-
-impl<T: Clone> IntoIterator for BusReader<T> {
-    type Item = T;
-    type IntoIter = BusIntoIter<T>;
-    fn into_iter(self) -> BusIntoIter<T> {
-        BusIntoIter(self)
-    }
-}
-
-impl<'a, T: Clone> Iterator for BusIter<'a, T> {
-    type Item = T;
-    fn next(&mut self) -> Option<T> {
-        self.0.recv().ok()
-    }
-}
-
-impl<T: Clone> Iterator for BusIntoIter<T> {
-    type Item = T;
-    fn next(&mut self) -> Option<T> {
-        self.0.recv().ok()
-    }
-}
-
 #[cfg(feature = "bench")]
 #[bench]
 fn bench_bus_one_to_one(b: &mut test::Bencher) {
+    use futures::stream::Stream;
+
     let mut c = Bus::new(100);
-    let mut rx = c.add_rx();
+    let mut rx = c.add_rx().wait();
     let j = thread::spawn(move || {
         loop {
-            match rx.recv() {
-                Ok(exit) if exit => break,
-                Err(..) => break,
+            match rx.next() {
+                Some(Ok(exit)) if exit => break,
+                Some(Err(..)) => unreachable!(),
+                None => break,
                 _ => (),
             }
         }
