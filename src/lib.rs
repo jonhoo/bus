@@ -628,6 +628,9 @@ impl<T: Clone, E> futures::stream::Stream for BusReader<T, E> {
 
             // nothing new to read
             // we would have blocked, but instead park current task and return NotReady
+            // note that this should use park_timeout when it exists:
+            // https://github.com/alexcrichton/futures-rs/issues/198
+            // to avoid not being woken up if a reader races with a writer with a full bus.
             let task = futures::task::park();
             if let Err(..) = self.waiting.send((task, self.head)) {
                 // writer has gone away, but this is not a reliable way to check
