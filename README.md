@@ -4,8 +4,6 @@
 [![Documentation](https://docs.rs/bus/badge.svg)](https://docs.rs/bus/)
 [![Build Status](https://travis-ci.org/jonhoo/bus.svg?branch=master)](https://travis-ci.org/jonhoo/bus)
 
-[Documentation](https://jon.tsp.io/crates/bus)
-
 Bus provides a lock-free, bounded, single-producer, multi-consumer, broadcast channel.
 
 It uses a circular buffer and atomic instructions to implement a lock-free single-producer,
