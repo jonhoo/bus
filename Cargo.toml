@@ -1,6 +1,6 @@
 [package]
 name = "bus"
-version = "1.1.1"
+version = "1.1.2"
 
 description = "A lock-free, bounded, single-producer, multi-consumer, broadcast channel."
 readme = "README.md"
@@ -12,8 +12,12 @@ homepage = "https://github.com/jonhoo/bus"
 repository = "https://github.com/jonhoo/bus.git"
 
 keywords = ["channel","broadcast","lock-free"]
+categories = ["asynchronous", "concurrency"]
 
 license = "MIT/Apache-2.0"
+
+[badges]
+travis-ci = { repository = "jonhoo/bus" }
 
 [features]
 bench = []
