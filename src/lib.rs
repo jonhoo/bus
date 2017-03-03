@@ -127,10 +127,13 @@ extern crate test;
 use std::sync::atomic;
 use std::sync::mpsc;
 use std::thread;
+use std::time;
 
 use std::cell::UnsafeCell;
 use std::ops::Deref;
 use std::sync::Arc;
+
+const SPINTIME: u32 = 100000; //ns
 
 struct SeatState<T: Clone> {
     max: usize,
@@ -305,10 +308,8 @@ impl<T: Clone> Bus<T> {
         // so we don't have to wait for unpark() to return in broadcast_inner
         // sending on a channel without contention is cheap, unparking is not
         let (unpark_tx, unpark_rx) = mpsc::channel::<thread::Thread>();
-        thread::spawn(move || {
-            for t in unpark_rx.iter() {
-                t.unpark();
-            }
+        thread::spawn(move || for t in unpark_rx.iter() {
+            t.unpark();
         });
 
         Bus {
@@ -351,6 +352,8 @@ impl<T: Clone> Bus<T> {
         // reader).
         let fence = (tail + 1) % self.state.len;
 
+        let spintime = time::Duration::new(0, SPINTIME);
+
         // to avoid parking when a slot frees up quickly, we use an exponential back-off SpinWait.
         let mut sw = SpinWait::new();
         loop {
@@ -380,11 +383,7 @@ impl<T: Clone> Bus<T> {
                 // yes! go ahead and write!
                 break;
             } else if block {
-                // no, so block
-                use std::time::Duration;
-
-                // park and tell readers to notify on last read
-                // TODO: spin before parking (https://github.com/Amanieu/parking_lot/issues/5)
+                // no, so block by parking and telling readers to notify on last read
                 self.state.ring[fence]
                     .waiting
                     .replace(Some(Box::new(thread::current())), atomic::Ordering::Relaxed);
@@ -396,7 +395,7 @@ impl<T: Clone> Bus<T> {
                     // not likely to get a slot soon -- wait to be unparked instead.
                     // note that we *need* to wait, because there are some cases in which we
                     // *won't* be unparked even though a slot has opened up.
-                    thread::park_timeout(Duration::new(0, 100000));
+                    thread::park_timeout(spintime);
                 }
                 continue;
             } else {
@@ -540,6 +539,12 @@ impl<T: Clone> Drop for Bus<T> {
     }
 }
 
+enum RecvCondition {
+    Try,
+    Block,
+    Timeout(time::Duration),
+}
+
 /// A BusReader is a single consumer of Bus broadcasts.
 /// It will see every new value that is passed to `.broadcast()` (or successful calls to
 /// `.try_broadcast()`) on the Bus that it was created from.
@@ -576,18 +581,24 @@ impl<T: Clone> BusReader<T> {
     /// Attempts to read a broadcast from the bus.
     ///
     /// If the bus is empty, the behavior depends on `block`. If false,
-    /// `Err(mpsc::TryRecvError::Empty)` is returned. Otherwise, the current thread will be parked
-    /// until there is another broadcast on the bus, at which point the receive will be performed.
-    fn recv_inner(&mut self, block: bool) -> Result<T, mpsc::TryRecvError> {
+    /// `Err(mpsc::RecvTimeoutError::Timeout)` is returned. Otherwise, the current thread will be
+    /// parked until there is another broadcast on the bus, at which point the receive will be
+    /// performed.
+    fn recv_inner(&mut self, block: RecvCondition) -> Result<T, mpsc::RecvTimeoutError> {
         if self.closed {
-            return Err(mpsc::TryRecvError::Disconnected);
+            return Err(mpsc::RecvTimeoutError::Disconnected);
         }
+
+        let start = match block {
+            RecvCondition::Timeout(_) => Some(time::Instant::now()),
+            _ => None,
+        };
+
+        let spintime = time::Duration::new(0, SPINTIME);
 
         let mut was_closed = false;
         let mut sw = SpinWait::new();
         loop {
-            use std::time::Duration;
-
             let tail = self.bus.tail.load(atomic::Ordering::Acquire);
             if tail != self.head {
                 break;
@@ -606,16 +617,15 @@ impl<T: Clone> BusReader<T> {
 
                 // the bus is closed, and we didn't miss anything!
                 self.closed = true;
-                return Err(mpsc::TryRecvError::Disconnected);
+                return Err(mpsc::RecvTimeoutError::Disconnected);
             }
 
             // not closed, should we block?
-            if !block {
-                return Err(mpsc::TryRecvError::Empty);
+            if let RecvCondition::Try = block {
+                return Err(mpsc::RecvTimeoutError::Timeout);
             }
 
             // park and tell writer to notify on write
-            // TODO: spin before parking (https://github.com/Amanieu/parking_lot/issues/5)
             if let Err(..) = self.waiting.send((thread::current(), self.head)) {
                 // writer has gone away, but this is not a reliable way to check
                 // in particular, we may also have missed updates
@@ -623,7 +633,28 @@ impl<T: Clone> BusReader<T> {
             }
 
             if !sw.spin() {
-                thread::park_timeout(Duration::new(0, 100000));
+                match block {
+                    RecvCondition::Timeout(ref t) => {
+                        match t.checked_sub(start.as_ref().unwrap().elapsed()) {
+                            Some(left) => {
+                                if left < spintime {
+                                    thread::park_timeout(left);
+                                } else {
+                                    thread::park_timeout(spintime);
+                                }
+                            }
+                            None => {
+                                // So, the wake-up thread is still going to try to wake us up later
+                                // since we sent thread::current() above, but that's fine.
+                                return Err(mpsc::RecvTimeoutError::Timeout);
+                            }
+                        }
+                    }
+                    RecvCondition::Block => {
+                        thread::park_timeout(spintime);
+                    }
+                    RecvCondition::Try => unreachable!(),
+                }
             }
         }
 
@@ -676,7 +707,10 @@ impl<T: Clone> BusReader<T> {
     /// j.join().unwrap();
     /// ```
     pub fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
-        self.recv_inner(false)
+        self.recv_inner(RecvCondition::Try).map_err(|e| match e {
+            mpsc::RecvTimeoutError::Disconnected => mpsc::TryRecvError::Disconnected,
+            mpsc::RecvTimeoutError::Timeout => mpsc::TryRecvError::Empty,
+        })
     }
 
     /// Read another broadcast message from the bus, and block if none are available.
@@ -690,11 +724,40 @@ impl<T: Clone> BusReader<T> {
     /// received on this channel. However, since channels are buffered, messages sent before the
     /// disconnect will still be properly received.
     pub fn recv(&mut self) -> Result<T, mpsc::RecvError> {
-        match self.recv_inner(true) {
+        match self.recv_inner(RecvCondition::Block) {
             Ok(val) => Ok(val),
-            Err(mpsc::TryRecvError::Disconnected) => Err(mpsc::RecvError),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(mpsc::RecvError),
             _ => unreachable!("blocking recv_inner can't fail"),
         }
+    }
+
+    /// Attempts to wait for a value from the bus, returning an error if the corresponding channel
+    /// has hung up, or if it waits more than `timeout`.
+    ///
+    /// This function will always block the current thread if there is no data available and it's
+    /// possible for more broadcasts to be sent. Once a message is sent on the corresponding `Bus`,
+    /// then this receiver will wake up and return that message.
+    ///
+    /// If the corresponding `Bus` has been dropped, or it is dropped while this call is blocking,
+    /// this call will wake up and return Err to indicate that no more messages can ever be
+    /// received on this channel. However, since channels are buffered, messages sent before the
+    /// disconnect will still be properly received.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use bus::Bus;
+    /// use std::sync::mpsc::RecvTimeoutError;
+    /// use std::time::Duration;
+    ///
+    /// let mut tx = Bus::<bool>::new(10);
+    /// let mut rx = tx.add_rx();
+    ///
+    /// let timeout = Duration::from_millis(100);
+    /// assert_eq!(Err(RecvTimeoutError::Timeout), rx.recv_timeout(timeout));
+    /// ```
+    pub fn recv_timeout(&mut self, timeout: time::Duration) -> Result<T, mpsc::RecvTimeoutError> {
+        self.recv_inner(RecvCondition::Timeout(timeout))
     }
 
     /// Returns an iterator that will block waiting for broadcasts.
@@ -758,13 +821,11 @@ impl<T: Clone> Iterator for BusIntoIter<T> {
 fn bench_bus_one_to_one(b: &mut test::Bencher) {
     let mut c = Bus::new(100);
     let mut rx = c.add_rx();
-    let j = thread::spawn(move || {
-        loop {
-            match rx.recv() {
-                Ok(exit) if exit => break,
-                Err(..) => break,
-                _ => (),
-            }
+    let j = thread::spawn(move || loop {
+        match rx.recv() {
+            Ok(exit) if exit => break,
+            Err(..) => break,
+            _ => (),
         }
     });
     b.iter(|| c.broadcast(false));
@@ -776,13 +837,11 @@ fn bench_bus_one_to_one(b: &mut test::Bencher) {
 #[bench]
 fn bench_syncch_one_to_one(b: &mut test::Bencher) {
     let (tx, rx) = mpsc::sync_channel(100);
-    let j = thread::spawn(move || {
-        loop {
-            match rx.recv() {
-                Ok(exit) if exit => break,
-                Err(..) => break,
-                _ => (),
-            }
+    let j = thread::spawn(move || loop {
+        match rx.recv() {
+            Ok(exit) if exit => break,
+            Err(..) => break,
+            _ => (),
         }
     });
     b.iter(|| tx.send(false).unwrap());
