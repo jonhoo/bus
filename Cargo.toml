@@ -20,15 +20,18 @@ license = "MIT/Apache-2.0"
 travis-ci = { repository = "jonhoo/bus" }
 
 [features]
+async = ["futures", "void"]
 bench = []
 
 [dependencies]
-num_cpus = "0.2"
 atomic-option = "0.1"
+futures = { optional = true, version = "0.1" }
+num_cpus = "0.2"
 parking_lot_core = "0.1"
+void = { optional = true, version = "1.0" }
 
 [profile.release]
-debug=true
+debug = true
 
 [[bin]]
 name = "bench"
