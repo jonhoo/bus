@@ -603,6 +603,7 @@ impl<T: Clone> BusReader<T> {
 
         let mut was_closed = false;
         let mut sw = SpinWait::new();
+        let mut first = true;
         loop {
             let tail = self.bus.tail.load(atomic::Ordering::Acquire);
             if tail != self.head {
@@ -631,10 +632,13 @@ impl<T: Clone> BusReader<T> {
             }
 
             // park and tell writer to notify on write
-            if let Err(..) = self.waiting.send((thread::current(), self.head)) {
-                // writer has gone away, but this is not a reliable way to check
-                // in particular, we may also have missed updates
-                unimplemented!();
+            if first {
+                if let Err(..) = self.waiting.send((thread::current(), self.head)) {
+                    // writer has gone away, but this is not a reliable way to check
+                    // in particular, we may also have missed updates
+                    unimplemented!();
+                }
+                first = false;
             }
 
             if !sw.spin() {
