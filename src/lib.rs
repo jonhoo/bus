@@ -140,14 +140,14 @@ use std::sync::Arc;
 
 const SPINTIME: u32 = 100000; //ns
 
-struct SeatState<T: Clone> {
+struct SeatState<T> {
     max: usize,
     val: Option<T>,
 }
 
-struct MutSeatState<T: Clone>(UnsafeCell<SeatState<T>>);
-unsafe impl<T: Clone> Sync for MutSeatState<T> {}
-impl<T: Clone> Deref for MutSeatState<T> {
+struct MutSeatState<T>(UnsafeCell<SeatState<T>>);
+unsafe impl<T> Sync for MutSeatState<T> {}
+impl<T> Deref for MutSeatState<T> {
     type Target = UnsafeCell<SeatState<T>>;
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -167,7 +167,7 @@ impl<T: Clone> Deref for MutSeatState<T> {
 ///
 /// The `read` attribute is used to ensure that readers see the most recent write to the seat when
 /// they access it. This is done using `atomic::Ordering::Acquire` and `atomic::Ordering::Release`.
-struct Seat<T: Clone> {
+struct Seat<T> {
     read: atomic::AtomicUsize,
     state: MutSeatState<T>,
 
@@ -176,7 +176,7 @@ struct Seat<T: Clone> {
     waiting: AtomicOption<thread::Thread>,
 }
 
-impl<T: Clone> Seat<T> {
+impl<T: Clone + Sync> Seat<T> {
     /// take is used by a reader to extract a copy of the value stored on this seat. only readers
     /// that were created strictly before the time this seat was last written to by the producer
     /// are allowed to call this method, and they may each only call it once.
@@ -237,7 +237,7 @@ impl<T: Clone> Seat<T> {
     }
 }
 
-impl<T: Clone> Default for Seat<T> {
+impl<T> Default for Seat<T> {
     fn default() -> Self {
         Seat {
             read: atomic::AtomicUsize::new(0),
@@ -253,7 +253,7 @@ impl<T: Clone> Default for Seat<T> {
 /// BusInner encapsulates data that both the writer and the readers need to access.
 /// The tail is only ever modified by the producer, and read by the consumers.
 /// The length of the bus is instantiated when the bus is created, and is never modified.
-struct BusInner<T: Clone> {
+struct BusInner<T> {
     ring: Vec<Seat<T>>,
     len: usize,
     tail: atomic::AtomicUsize,
@@ -265,7 +265,7 @@ struct BusInner<T: Clone> {
 /// When the Bus is dropped, receivers will continue receiving any outstanding broadcast messages
 /// they would have received if the bus were not dropped. After all those messages have been
 /// received, any subsequent receive call on a receiver will return a disconnected error.
-pub struct Bus<T: Clone> {
+pub struct Bus<T> {
     state: Arc<BusInner<T>>,
 
     // current number of readers
@@ -290,7 +290,7 @@ pub struct Bus<T: Clone> {
     cache: Vec<(thread::Thread, usize)>,
 }
 
-impl<T: Clone> Bus<T> {
+impl<T: Clone + Sync> Bus<T> {
     /// Allocates a new bus.
     ///
     /// The provided length should be sufficient to absorb temporary peaks in the data flow, and is
@@ -534,7 +534,7 @@ impl<T: Clone> Bus<T> {
     }
 }
 
-impl<T: Clone> Drop for Bus<T> {
+impl<T> Drop for Bus<T> {
     fn drop(&mut self) {
         self.state.closed.store(true, atomic::Ordering::Relaxed);
         // Acquire/Release .tail to ensure other threads see new .closed
@@ -574,7 +574,7 @@ enum RecvCondition {
 /// drop(r2);
 /// assert_eq!(tx.try_broadcast(true), Ok(()));
 /// ```
-pub struct BusReader<T: Clone> {
+pub struct BusReader<T> {
     bus: Arc<BusInner<T>>,
     head: usize,
     leaving: mpsc::Sender<usize>,
@@ -582,7 +582,7 @@ pub struct BusReader<T: Clone> {
     closed: bool,
 }
 
-impl<T: Clone> BusReader<T> {
+impl<T: Clone + Sync> BusReader<T> {
     /// Attempts to read a broadcast from the bus.
     ///
     /// If the bus is empty, the behavior depends on `block`. If false,
@@ -776,7 +776,7 @@ impl<T: Clone> BusReader<T> {
     }
 }
 
-impl<T: Clone> Drop for BusReader<T> {
+impl<T> Drop for BusReader<T> {
     #[allow(unused_must_use)]
     fn drop(&mut self) {
         // we allow not checking the result here because the writer might have gone away, which
@@ -786,7 +786,7 @@ impl<T: Clone> Drop for BusReader<T> {
 }
 
 #[cfg(feature = "async")]
-impl<T: Clone> futures::Stream for BusReader<T> {
+impl<T: Clone + Sync> futures::Stream for BusReader<T> {
     type Item = T;
     type Error = void::Void;
 
@@ -807,9 +807,9 @@ pub struct BusIter<'a, T: 'a + Clone>(&'a mut BusReader<T>);
 /// An owning iterator over messages on a receiver.
 /// This iterator will block whenever `next` is called, waiting for a new message, and `None` will
 /// be returned when the corresponding bus has been closed.
-pub struct BusIntoIter<T: Clone>(BusReader<T>);
+pub struct BusIntoIter<T>(BusReader<T>);
 
-impl<'a, T: Clone> IntoIterator for &'a mut BusReader<T> {
+impl<'a, T: Clone + Sync> IntoIterator for &'a mut BusReader<T> {
     type Item = T;
     type IntoIter = BusIter<'a, T>;
     fn into_iter(self) -> BusIter<'a, T> {
@@ -817,7 +817,7 @@ impl<'a, T: Clone> IntoIterator for &'a mut BusReader<T> {
     }
 }
 
-impl<T: Clone> IntoIterator for BusReader<T> {
+impl<T: Clone + Sync> IntoIterator for BusReader<T> {
     type Item = T;
     type IntoIter = BusIntoIter<T>;
     fn into_iter(self) -> BusIntoIter<T> {
@@ -825,14 +825,14 @@ impl<T: Clone> IntoIterator for BusReader<T> {
     }
 }
 
-impl<'a, T: Clone> Iterator for BusIter<'a, T> {
+impl<'a, T: Clone + Sync> Iterator for BusIter<'a, T> {
     type Item = T;
     fn next(&mut self) -> Option<T> {
         self.0.recv().ok()
     }
 }
 
-impl<T: Clone> Iterator for BusIntoIter<T> {
+impl<T: Clone + Sync> Iterator for BusIntoIter<T> {
     type Item = T;
     fn next(&mut self) -> Option<T> {
         self.0.recv().ok()
