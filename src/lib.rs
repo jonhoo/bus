@@ -290,7 +290,7 @@ pub struct Bus<T> {
     cache: Vec<(thread::Thread, usize)>,
 }
 
-impl<T: Clone + Sync> Bus<T> {
+impl<T> Bus<T> {
     /// Allocates a new bus.
     ///
     /// The provided length should be sufficient to absorb temporary peaks in the data flow, and is
@@ -768,7 +768,9 @@ impl<T: Clone + Sync> BusReader<T> {
     pub fn recv_timeout(&mut self, timeout: time::Duration) -> Result<T, mpsc::RecvTimeoutError> {
         self.recv_inner(RecvCondition::Timeout(timeout))
     }
+}
 
+impl<T> BusReader<T> {
     /// Returns an iterator that will block waiting for broadcasts.
     /// It will return None when the bus has been closed (i.e., the `Bus` has been dropped).
     pub fn iter<'a>(&'a mut self) -> BusIter<'a, T> {
@@ -802,7 +804,7 @@ impl<T: Clone + Sync> futures::Stream for BusReader<T> {
 /// An iterator over messages on a receiver.
 /// This iterator will block whenever `next` is called, waiting for a new message, and `None` will
 /// be returned when the corresponding channel has been closed.
-pub struct BusIter<'a, T: 'a + Clone>(&'a mut BusReader<T>);
+pub struct BusIter<'a, T: 'a>(&'a mut BusReader<T>);
 
 /// An owning iterator over messages on a receiver.
 /// This iterator will block whenever `next` is called, waiting for a new message, and `None` will
