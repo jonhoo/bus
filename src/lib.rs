@@ -551,6 +551,7 @@ impl<T> Drop for Bus<T> {
     }
 }
 
+#[derive(Clone, Copy)]
 enum RecvCondition {
     Try,
     Block,
@@ -596,12 +597,12 @@ impl<T: Clone + Sync> BusReader<T> {
     /// `Err(mpsc::RecvTimeoutError::Timeout)` is returned. Otherwise, the current thread will be
     /// parked until there is another broadcast on the bus, at which point the receive will be
     /// performed.
-    fn recv_inner(&mut self, block: &RecvCondition) -> Result<T, mpsc::RecvTimeoutError> {
+    fn recv_inner(&mut self, block: RecvCondition) -> Result<T, mpsc::RecvTimeoutError> {
         if self.closed {
             return Err(mpsc::RecvTimeoutError::Disconnected);
         }
 
-        let start = match *block {
+        let start = match block {
             RecvCondition::Timeout(_) => Some(time::Instant::now()),
             _ => None,
         };
@@ -634,7 +635,7 @@ impl<T: Clone + Sync> BusReader<T> {
             }
 
             // not closed, should we block?
-            if let RecvCondition::Try = *block {
+            if let RecvCondition::Try = block {
                 return Err(mpsc::RecvTimeoutError::Timeout);
             }
 
@@ -649,8 +650,8 @@ impl<T: Clone + Sync> BusReader<T> {
             }
 
             if !sw.spin() {
-                match *block {
-                    RecvCondition::Timeout(ref t) => {
+                match block {
+                    RecvCondition::Timeout(t) => {
                         match t.checked_sub(start.as_ref().unwrap().elapsed()) {
                             Some(left) => {
                                 if left < spintime {
@@ -723,7 +724,7 @@ impl<T: Clone + Sync> BusReader<T> {
     /// j.join().unwrap();
     /// ```
     pub fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
-        self.recv_inner(&RecvCondition::Try).map_err(|e| match e {
+        self.recv_inner(RecvCondition::Try).map_err(|e| match e {
             mpsc::RecvTimeoutError::Disconnected => mpsc::TryRecvError::Disconnected,
             mpsc::RecvTimeoutError::Timeout => mpsc::TryRecvError::Empty,
         })
@@ -740,7 +741,7 @@ impl<T: Clone + Sync> BusReader<T> {
     /// received on this channel. However, since channels are buffered, messages sent before the
     /// disconnect will still be properly received.
     pub fn recv(&mut self) -> Result<T, mpsc::RecvError> {
-        match self.recv_inner(&RecvCondition::Block) {
+        match self.recv_inner(RecvCondition::Block) {
             Ok(val) => Ok(val),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(mpsc::RecvError),
             _ => unreachable!("blocking recv_inner can't fail"),
@@ -773,7 +774,7 @@ impl<T: Clone + Sync> BusReader<T> {
     /// assert_eq!(Err(RecvTimeoutError::Timeout), rx.recv_timeout(timeout));
     /// ```
     pub fn recv_timeout(&mut self, timeout: time::Duration) -> Result<T, mpsc::RecvTimeoutError> {
-        self.recv_inner(&RecvCondition::Timeout(timeout))
+        self.recv_inner(RecvCondition::Timeout(timeout))
     }
 }
 
