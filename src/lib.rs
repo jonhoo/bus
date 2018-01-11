@@ -112,7 +112,6 @@
 //! ```
 
 #![deny(missing_docs)]
-
 #![cfg_attr(feature = "bench", feature(test))]
 
 extern crate atomic_option;
@@ -202,8 +201,10 @@ impl<T: Clone + Sync> Seat<T> {
         //  - since we are one of those readers, this cannot be true, so it's safe for us to assume
         //    that there is no concurrent writer for this seat
         let state = unsafe { &*self.state.get() };
-        assert!(read < state.max,
-                "reader hit seat with exhausted reader count");
+        assert!(
+            read < state.max,
+            "reader hit seat with exhausted reader count"
+        );
 
         let mut waiting = None;
 
@@ -220,7 +221,10 @@ impl<T: Clone + Sync> Seat<T> {
             // safely take a mutable reference, and just take the val instead of cloning it.
             unsafe { &mut *self.state.get() }.val.take().unwrap()
         } else {
-            state.val.clone().expect("seat that should be occupied was empty")
+            state
+                .val
+                .clone()
+                .expect("seat that should be occupied was empty")
         };
 
         // let writer know that we no longer need this item.
@@ -242,10 +246,7 @@ impl<T> Default for Seat<T> {
         Seat {
             read: atomic::AtomicUsize::new(0),
             waiting: AtomicOption::empty(),
-            state: MutSeatState(UnsafeCell::new(SeatState {
-                max: 0,
-                val: None,
-            })),
+            state: MutSeatState(UnsafeCell::new(SeatState { max: 0, val: None })),
         }
     }
 }
@@ -280,7 +281,10 @@ pub struct Bus<T> {
 
     // waiting is used by receivers to signal that they are waiting for new entries, and where they
     // are waiting
-    waiting: (mpsc::Sender<(thread::Thread, usize)>, mpsc::Receiver<(thread::Thread, usize)>),
+    waiting: (
+        mpsc::Sender<(thread::Thread, usize)>,
+        mpsc::Receiver<(thread::Thread, usize)>,
+    ),
 
     // channel used to communicate to unparker that a given thread should be woken up
     unpark: mpsc::Sender<thread::Thread>,
@@ -313,8 +317,10 @@ impl<T> Bus<T> {
         // so we don't have to wait for unpark() to return in broadcast_inner
         // sending on a channel without contention is cheap, unparking is not
         let (unpark_tx, unpark_rx) = mpsc::channel::<thread::Thread>();
-        thread::spawn(move || for t in unpark_rx.iter() {
-            t.unpark();
+        thread::spawn(move || {
+            for t in unpark_rx.iter() {
+                t.unpark();
+            }
         });
 
         Bus {
@@ -394,7 +400,9 @@ impl<T> Bus<T> {
                     .replace(Some(Box::new(thread::current())), atomic::Ordering::Relaxed);
 
                 // need the atomic fetch_add to ensure reader threads will see the new .waiting
-                self.state.ring[fence].read.fetch_add(0, atomic::Ordering::Release);
+                self.state.ring[fence]
+                    .read
+                    .fetch_add(0, atomic::Ordering::Release);
 
                 if !sw.spin() {
                     // not likely to get a slot soon -- wait to be unparked instead.

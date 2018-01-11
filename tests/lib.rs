@@ -109,6 +109,7 @@ fn it_runs_blocked_writes() {
     let mut c = Box::new(bus::Bus::new(1));
     let mut r1 = c.add_rx();
     c.broadcast(true); // this is fine
+
     // buffer is now full
     assert_eq!(c.try_broadcast(false), Err(false));
     // start other thread that blocks
@@ -160,7 +161,6 @@ fn it_can_count_to_10000() {
     j.join().unwrap();
     assert_eq!(r1.try_recv(), Err(mpsc::TryRecvError::Disconnected));
 }
-
 
 #[test]
 fn test_busy() {

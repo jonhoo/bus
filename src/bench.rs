@@ -62,10 +62,12 @@ fn main() {
     let num = 2_000_000;
 
     for threads in 1..(2 * num_cpus::get()) {
-        println!("{} {} {:.*} μs/op",
-                 threads,
-                 1_000,
-                 2,
-                 helper(1_000, num, threads) as f64 / num as f64);
+        println!(
+            "{} {} {:.*} μs/op",
+            threads,
+            1_000,
+            2,
+            helper(1_000, num, threads) as f64 / num as f64
+        );
     }
 }
