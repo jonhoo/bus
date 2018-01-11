@@ -23,10 +23,8 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
                             Err(..) => thread::sleep(w),
                             _ => (),
                         }
-                    } else {
-                        if let Ok(true) = rx.recv() {
-                            break;
-                        }
+                    } else if let Ok(true) = rx.recv() {
+                        break;
                     }
                 }
             })
@@ -50,12 +48,12 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
     }
 
     send(true);
-    for w in wait.into_iter() {
+    for w in wait {
         w.join().unwrap();
     }
 
     let dur = start.elapsed();
-    (dur.as_secs() * 1000_000) + (dur.subsec_nanos() / 1000) as u64
+    (dur.as_secs() * 1_000_000) + u64::from(dur.subsec_nanos() / 1000)
 }
 
 fn main() {

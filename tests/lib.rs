@@ -149,12 +149,12 @@ fn it_can_count_to_10000() {
     let mut c = bus::Bus::new(2);
     let mut r1 = c.add_rx();
     let j = thread::spawn(move || {
-        for i in 0..10000 {
+        for i in 0..10_000 {
             c.broadcast(i);
         }
     });
 
-    for i in 0..10000 {
+    for i in 0..10_000 {
         assert_eq!(r1.recv(), Ok(i));
     }
 

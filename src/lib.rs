@@ -137,7 +137,7 @@ use std::cell::UnsafeCell;
 use std::ops::Deref;
 use std::sync::Arc;
 
-const SPINTIME: u32 = 100000; //ns
+const SPINTIME: u32 = 100_000; //ns
 
 struct SeatState<T> {
     max: usize,
@@ -229,6 +229,7 @@ impl<T: Clone + Sync> Seat<T> {
 
         // let writer know that we no longer need this item.
         // state is no longer safe to access.
+        #[cfg_attr(feature = "cargo-clippy", allow(drop_ref))]
         drop(state);
         self.read.fetch_add(1, atomic::Ordering::AcqRel);
 
@@ -237,7 +238,7 @@ impl<T: Clone + Sync> Seat<T> {
             t.unpark();
         }
 
-        return v;
+        v
     }
 }
 
@@ -251,9 +252,9 @@ impl<T> Default for Seat<T> {
     }
 }
 
-/// BusInner encapsulates data that both the writer and the readers need to access.
-/// The tail is only ever modified by the producer, and read by the consumers.
-/// The length of the bus is instantiated when the bus is created, and is never modified.
+/// `BusInner` encapsulates data that both the writer and the readers need to access. The tail is
+/// only ever modified by the producer, and read by the consumers. The length of the bus is
+/// instantiated when the bus is created, and is never modified.
 struct BusInner<T> {
     ring: Vec<Seat<T>>,
     len: usize,
@@ -261,11 +262,11 @@ struct BusInner<T> {
     closed: atomic::AtomicBool,
 }
 
-/// Bus is the main interconnect for broadcast messages.
-/// It can be used to send broadcast messages, or to connect additional consumers.
-/// When the Bus is dropped, receivers will continue receiving any outstanding broadcast messages
-/// they would have received if the bus were not dropped. After all those messages have been
-/// received, any subsequent receive call on a receiver will return a disconnected error.
+/// `Bus` is the main interconnect for broadcast messages. It can be used to send broadcast
+/// messages, or to connect additional consumers. When the `Bus` is dropped, receivers will
+/// continue receiving any outstanding broadcast messages they would have received if the bus were
+/// not dropped. After all those messages have been received, any subsequent receive call on a
+/// receiver will return a disconnected error.
 pub struct Bus<T> {
     state: Arc<BusInner<T>>,
 
@@ -281,6 +282,7 @@ pub struct Bus<T> {
 
     // waiting is used by receivers to signal that they are waiting for new entries, and where they
     // are waiting
+    #[cfg_attr(feature = "cargo-clippy", allow(type_complexity))]
     waiting: (
         mpsc::Sender<(thread::Thread, usize)>,
         mpsc::Receiver<(thread::Thread, usize)>,
@@ -295,7 +297,7 @@ pub struct Bus<T> {
 }
 
 impl<T> Bus<T> {
-    /// Allocates a new bus.
+    /// Allocates a new `Bus`.
     ///
     /// The provided length should be sufficient to absorb temporary peaks in the data flow, and is
     /// thus workflow-dependent. Bus performance degrades somewhat when the queue is full, so it is
@@ -335,9 +337,9 @@ impl<T> Bus<T> {
         }
     }
 
-    /// Get the expected number of reads for the given seat.
-    /// This number will always be conservative, in that fewer reads may be fine. Specifically,
-    /// `.rleft` may not be sufficiently up-to-date to account for all readers that have left.
+    /// Get the expected number of reads for the given seat. This number will always be
+    /// conservative, in that fewer reads may be fine. Specifically, `.rleft` may not be
+    /// sufficiently up-to-date to account for all readers that have left.
     #[inline]
     fn expected(&mut self, at: usize) -> usize {
         // since only the producer will modify the ring, and &mut self guarantees that *we* are the
@@ -461,10 +463,7 @@ impl<T> Bus<T> {
         Ok(())
     }
 
-    /// Attempt to broadcast the given value to all consumers, but do not wait if bus is full.
-    ///
-    ///
-    /// Attempts to broadcast a value on this bus, returning it back if it could not be sent.
+    /// Attempt to broadcast the given value to all consumers, but does not block if full.
     ///
     /// Note that, in contrast to regular channels, a bus is *not* considered closed if there are
     /// no consumers, and thus broadcasts will continue to succeed. Thus, a successful broadcast
@@ -533,7 +532,7 @@ impl<T> Bus<T> {
         self.readers += 1;
 
         BusReader {
-            bus: self.state.clone(),
+            bus: Arc::clone(&self.state),
             head: self.state.tail.load(atomic::Ordering::Relaxed),
             leaving: self.leaving.0.clone(),
             waiting: self.waiting.0.clone(),
@@ -558,12 +557,12 @@ enum RecvCondition {
     Timeout(time::Duration),
 }
 
-/// A BusReader is a single consumer of Bus broadcasts.
-/// It will see every new value that is passed to `.broadcast()` (or successful calls to
-/// `.try_broadcast()`) on the Bus that it was created from.
+/// A `BusReader` is a single consumer of `Bus` broadcasts. It will see every new value that is
+/// passed to `.broadcast()` (or successful calls to `.try_broadcast()`) on the `Bus` that it was
+/// created from.
 ///
-/// Dropping a BusReader is perfectly safe, and will unblock the writer if it was waiting for that
-/// read to see a particular update.
+/// Dropping a `BusReader` is perfectly safe, and will unblock the writer if it was waiting for
+/// that read to see a particular update.
 ///
 /// ```rust
 /// use bus::Bus;
@@ -597,12 +596,12 @@ impl<T: Clone + Sync> BusReader<T> {
     /// `Err(mpsc::RecvTimeoutError::Timeout)` is returned. Otherwise, the current thread will be
     /// parked until there is another broadcast on the bus, at which point the receive will be
     /// performed.
-    fn recv_inner(&mut self, block: RecvCondition) -> Result<T, mpsc::RecvTimeoutError> {
+    fn recv_inner(&mut self, block: &RecvCondition) -> Result<T, mpsc::RecvTimeoutError> {
         if self.closed {
             return Err(mpsc::RecvTimeoutError::Disconnected);
         }
 
-        let start = match block {
+        let start = match *block {
             RecvCondition::Timeout(_) => Some(time::Instant::now()),
             _ => None,
         };
@@ -635,7 +634,7 @@ impl<T: Clone + Sync> BusReader<T> {
             }
 
             // not closed, should we block?
-            if let RecvCondition::Try = block {
+            if let RecvCondition::Try = *block {
                 return Err(mpsc::RecvTimeoutError::Timeout);
             }
 
@@ -650,7 +649,7 @@ impl<T: Clone + Sync> BusReader<T> {
             }
 
             if !sw.spin() {
-                match block {
+                match *block {
                     RecvCondition::Timeout(ref t) => {
                         match t.checked_sub(start.as_ref().unwrap().elapsed()) {
                             Some(left) => {
@@ -724,7 +723,7 @@ impl<T: Clone + Sync> BusReader<T> {
     /// j.join().unwrap();
     /// ```
     pub fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
-        self.recv_inner(RecvCondition::Try).map_err(|e| match e {
+        self.recv_inner(&RecvCondition::Try).map_err(|e| match e {
             mpsc::RecvTimeoutError::Disconnected => mpsc::TryRecvError::Disconnected,
             mpsc::RecvTimeoutError::Timeout => mpsc::TryRecvError::Empty,
         })
@@ -733,15 +732,15 @@ impl<T: Clone + Sync> BusReader<T> {
     /// Read another broadcast message from the bus, and block if none are available.
     ///
     /// This function will always block the current thread if there is no data available and it's
-    /// possible for more broadcasts to be sent. Once a broadcast is sent on the corresponding Bus,
-    /// then this receiver will wake up and return that message.
+    /// possible for more broadcasts to be sent. Once a broadcast is sent on the corresponding
+    /// `Bus`, then this receiver will wake up and return that message.
     ///
     /// If the corresponding `Bus` has been dropped, or it is dropped while this call is blocking,
-    /// this call will wake up and return Err to indicate that no more messages can ever be
+    /// this call will wake up and return `Err` to indicate that no more messages can ever be
     /// received on this channel. However, since channels are buffered, messages sent before the
     /// disconnect will still be properly received.
     pub fn recv(&mut self) -> Result<T, mpsc::RecvError> {
-        match self.recv_inner(RecvCondition::Block) {
+        match self.recv_inner(&RecvCondition::Block) {
             Ok(val) => Ok(val),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(mpsc::RecvError),
             _ => unreachable!("blocking recv_inner can't fail"),
@@ -774,14 +773,14 @@ impl<T: Clone + Sync> BusReader<T> {
     /// assert_eq!(Err(RecvTimeoutError::Timeout), rx.recv_timeout(timeout));
     /// ```
     pub fn recv_timeout(&mut self, timeout: time::Duration) -> Result<T, mpsc::RecvTimeoutError> {
-        self.recv_inner(RecvCondition::Timeout(timeout))
+        self.recv_inner(&RecvCondition::Timeout(timeout))
     }
 }
 
 impl<T> BusReader<T> {
-    /// Returns an iterator that will block waiting for broadcasts.
-    /// It will return None when the bus has been closed (i.e., the `Bus` has been dropped).
-    pub fn iter<'a>(&'a mut self) -> BusIter<'a, T> {
+    /// Returns an iterator that will block waiting for broadcasts. It will return `None` when the
+    /// bus has been closed (i.e., the `Bus` has been dropped).
+    pub fn iter(&mut self) -> BusIter<T> {
         BusIter(self)
     }
 }
@@ -809,14 +808,14 @@ impl<T: Clone + Sync> futures::Stream for BusReader<T> {
     }
 }
 
-/// An iterator over messages on a receiver.
-/// This iterator will block whenever `next` is called, waiting for a new message, and `None` will
-/// be returned when the corresponding channel has been closed.
+/// An iterator over messages on a receiver. This iterator will block whenever `next` is called,
+/// waiting for a new message, and `None` will be returned when the corresponding channel has been
+/// closed.
 pub struct BusIter<'a, T: 'a>(&'a mut BusReader<T>);
 
-/// An owning iterator over messages on a receiver.
-/// This iterator will block whenever `next` is called, waiting for a new message, and `None` will
-/// be returned when the corresponding bus has been closed.
+/// An owning iterator over messages on a receiver. This iterator will block whenever `next` is
+/// called, waiting for a new message, and `None` will be returned when the corresponding bus has
+/// been closed.
 pub struct BusIntoIter<T>(BusReader<T>);
 
 impl<'a, T: Clone + Sync> IntoIterator for &'a mut BusReader<T> {
