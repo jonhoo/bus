@@ -123,11 +123,6 @@ use parking_lot_core::SpinWait;
 #[cfg(feature = "bench")]
 extern crate test;
 
-#[cfg(feature = "async")]
-extern crate futures;
-#[cfg(feature = "async")]
-extern crate void;
-
 use std::sync::atomic;
 use std::sync::mpsc;
 use std::thread;
@@ -792,20 +787,6 @@ impl<T> Drop for BusReader<T> {
         // we allow not checking the result here because the writer might have gone away, which
         // would result in an error, but is okay nonetheless.
         self.leaving.send(self.head);
-    }
-}
-
-#[cfg(feature = "async")]
-impl<T: Clone + Sync> futures::Stream for BusReader<T> {
-    type Item = T;
-    type Error = void::Void;
-
-    fn poll(&mut self) -> futures::Poll<Option<Self::Item>, Self::Error> {
-        match self.try_recv() {
-            Ok(value) => Ok(futures::Async::Ready(Some(value))),
-            Err(mpsc::TryRecvError::Disconnected) => Ok(futures::Async::Ready(None)),
-            Err(mpsc::TryRecvError::Empty) => Ok(futures::Async::NotReady),
-        }
     }
 }
 

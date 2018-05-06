@@ -1,6 +1,6 @@
 [package]
 name = "bus"
-version = "1.4.1"
+version = "2.0.0"
 
 description = "A lock-free, bounded, single-producer, multi-consumer, broadcast channel."
 readme = "README.md"
@@ -12,7 +12,7 @@ homepage = "https://github.com/jonhoo/bus"
 repository = "https://github.com/jonhoo/bus.git"
 
 keywords = ["channel","broadcast","lock-free"]
-categories = ["asynchronous", "concurrency"]
+categories = ["concurrency"]
 
 license = "MIT/Apache-2.0"
 
@@ -20,15 +20,12 @@ license = "MIT/Apache-2.0"
 travis-ci = { repository = "jonhoo/bus" }
 
 [features]
-async = ["futures", "void"]
 bench = []
 
 [dependencies]
 atomic-option = "0.1"
-futures = { optional = true, version = "0.1.14" }
 num_cpus = "1.6.2"
 parking_lot_core = "0.2.2"
-void = { optional = true, version = "1.0.2" }
 
 [profile.release]
 debug = true
