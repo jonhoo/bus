@@ -1,4 +1,8 @@
 extern crate bus;
+#[cfg(feature = "async")]
+extern crate futures;
+#[cfg(feature = "async")]
+extern crate tokio;
 
 use std::sync::mpsc;
 use std::time;
@@ -203,4 +207,214 @@ fn test_busy() {
     t1.join().unwrap();
     t2.join().unwrap();
     assert!(true);
+}
+
+fn spawn_deadlined<F>(deadline: time::Instant, future: F)
+    where F: futures::Future + Send + 'static,
+{
+    use futures::Future;
+    tokio::spawn({
+        tokio::timer::Deadline::new(future, deadline)
+            .map(|_| ())
+            .map_err(|e| {
+                panic!("\ndeadline failure\ndeadline elapsed: {:?}\ntimer error: {:?}\n",
+                    e.is_elapsed(), e.into_timer());
+            })
+    });
+}
+
+#[test]
+fn it_wakes_async_readers() {
+    use futures::prelude::*;
+    use futures::{future, stream};
+    use std::sync;
+
+    let items = sync::Arc::new(sync::Mutex::new(vec![]));
+    let tokio_items = items.clone();
+
+    tokio::run(future::lazy(move || {
+        let items = tokio_items;
+        let started_at = time::Instant::now();
+        let deadline = started_at + time::Duration::from_millis(2000);
+        let mut bus = bus::Bus::new(1);
+
+        {
+            let mut spawn_eager = |nr| spawn_deadlined(deadline, {
+                let items = items.clone();
+                bus.add_rx()
+                    .for_each(move |i| {
+                        items.lock().unwrap().push((nr, i, started_at.elapsed()));
+                        Ok(())
+                    })
+                    .map_err(|_| unreachable!())
+            });
+
+            spawn_eager(1);
+            spawn_eager(2);
+            spawn_eager(3);
+        }
+
+        spawn_deadlined(deadline, {
+            stream::iter_ok(0..5)
+                .and_then(|i| {
+                    tokio::timer::Delay::new(time::Instant::now() + time::Duration::from_millis(100))
+                        .map(move |()| i)
+                        .map_err(|_: tokio::timer::Error| panic!("delay failed"))
+                })
+                .forward(bus.sink_map_err(|_| unreachable!()))
+        });
+
+        Ok(())
+    }));
+
+    let mut items = sync::Arc::try_unwrap(items).unwrap()
+        .into_inner().unwrap();
+    items.sort();
+    assert_eq!(items, vec![]);
+}
+
+#[test]
+fn it_wakes_async_readers_with_writer_spawned_first() {
+    use futures::prelude::*;
+    use futures::{future, stream};
+    use std::sync;
+
+    let items = sync::Arc::new(sync::Mutex::new(vec![]));
+    let tokio_items = items.clone();
+
+    tokio::run(future::lazy(move || {
+        let items = tokio_items;
+        let started_at = time::Instant::now();
+        let deadline = started_at + time::Duration::from_millis(2000);
+        let mut bus = bus::Bus::new(1);
+
+        let intervals = vec![
+            (bus.add_rx(), 1),
+            (bus.add_rx(), 2),
+            (bus.add_rx(), 3),
+        ];
+
+        spawn_deadlined(deadline, {
+            stream::iter_ok(0..5)
+                .and_then(|i| {
+                    tokio::timer::Delay::new(time::Instant::now() + time::Duration::from_millis(100))
+                        .map(move |()| i)
+                        .map_err(|_: tokio::timer::Error| panic!("delay failed"))
+                })
+                .forward(bus.sink_map_err(|_| unreachable!()))
+        });
+
+        for (rx, nr) in intervals {
+            spawn_deadlined(deadline, {
+                let items = items.clone();
+                rx
+                    .for_each(move |i| {
+                        items.lock().unwrap().push((nr, i, started_at.elapsed()));
+                        Ok(())
+                    })
+                    .map_err(|_| unreachable!())
+            });
+        }
+
+        Ok(())
+    }));
+
+    let mut items = sync::Arc::try_unwrap(items).unwrap()
+        .into_inner().unwrap();
+    items.sort();
+    assert_eq!(items, vec![]);
+}
+
+#[test]
+fn it_wakes_async_writers() {
+    use futures::prelude::*;
+    use futures::{future, stream};
+    use std::sync;
+
+    let items = sync::Arc::new(sync::Mutex::new(vec![]));
+    let tokio_items = items.clone();
+
+    tokio::run(future::lazy(move || {
+        let items = tokio_items;
+        let started_at = time::Instant::now();
+        let deadline = started_at + time::Duration::from_millis(2000);
+        let mut bus = bus::Bus::new(1);
+
+        {
+            let mut spawn_interval = |nr, millis| spawn_deadlined(deadline, {
+                let items = items.clone();
+                bus.add_rx()
+                    .for_each(move |i| {
+                        items.lock().unwrap().push((nr, i, started_at.elapsed()));
+                        tokio::timer::Delay::new(time::Instant::now() + time::Duration::from_millis(millis))
+                            .map_err(|_: tokio::timer::Error| panic!("delay failed"))
+                    })
+                    .map_err(|_| unreachable!())
+            });
+
+            spawn_interval(1, 75);
+            spawn_interval(2, 100);
+            spawn_interval(3, 125);
+        }
+
+        spawn_deadlined(deadline, {
+            stream::iter_ok::<_, ()>(0..5)
+                .forward(bus.sink_map_err(|_| unreachable!()))
+        });
+
+        Ok(())
+    }));
+
+    let mut items = sync::Arc::try_unwrap(items).unwrap()
+        .into_inner().unwrap();
+    items.sort();
+    assert_eq!(items, vec![]);
+}
+
+#[test]
+fn it_wakes_async_writers_with_writer_spawned_first() {
+    use futures::prelude::*;
+    use futures::{future, stream};
+    use std::sync;
+
+    let items = sync::Arc::new(sync::Mutex::new(vec![]));
+    let tokio_items = items.clone();
+
+    tokio::run(future::lazy(move || {
+        let items = tokio_items;
+        let started_at = time::Instant::now();
+        let deadline = started_at + time::Duration::from_millis(2000);
+        let mut bus = bus::Bus::new(1);
+
+        let intervals = vec![
+            (bus.add_rx(), 1, 75),
+            (bus.add_rx(), 2, 100),
+            (bus.add_rx(), 3, 125),
+        ];
+
+        spawn_deadlined(deadline, {
+            stream::iter_ok::<_, ()>(0..5)
+                .forward(bus.sink_map_err(|_| unreachable!()))
+        });
+
+        for (rx, nr, millis) in intervals {
+            spawn_deadlined(deadline, {
+                let items = items.clone();
+                rx
+                    .for_each(move |i| {
+                        items.lock().unwrap().push((nr, i, started_at.elapsed()));
+                        tokio::timer::Delay::new(time::Instant::now() + time::Duration::from_millis(millis))
+                            .map_err(|_: tokio::timer::Error| panic!("delay failed"))
+                    })
+                    .map_err(|_| unreachable!())
+            });
+        }
+
+        Ok(())
+    }));
+
+    let mut items = sync::Arc::try_unwrap(items).unwrap()
+        .into_inner().unwrap();
+    items.sort();
+    assert_eq!(items, vec![]);
 }

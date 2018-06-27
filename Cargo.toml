@@ -30,6 +30,9 @@ num_cpus = "1.6.2"
 parking_lot_core = "0.2.2"
 void = { optional = true, version = "1.0.2" }
 
+[dev-dependencies]
+tokio = "0.1.7"
+
 [profile.release]
 debug = true
 

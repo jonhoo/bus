@@ -551,6 +551,23 @@ impl<T> Drop for Bus<T> {
     }
 }
 
+#[cfg(feature = "async")]
+impl<T: Clone + Sync> futures::Sink for Bus<T> {
+    type SinkItem = T;
+    type SinkError = void::Void;
+
+    fn start_send(&mut self, item: Self::SinkItem) -> futures::StartSend<Self::SinkItem, Self::SinkError> {
+        match self.try_broadcast(item) {
+            Ok(()) => Ok(futures::AsyncSink::Ready),
+            Err(item) => Ok(futures::AsyncSink::NotReady(item)),
+        }
+    }
+
+    fn poll_complete(&mut self) -> futures::Poll<(), Self::SinkError> {
+        Ok(futures::Async::Ready(()))
+    }
+}
+
 #[derive(Clone, Copy)]
 enum RecvCondition {
     Try,
