@@ -236,7 +236,7 @@ fn it_wakes_async_readers() {
         let items = tokio_items;
         let started_at = time::Instant::now();
         let deadline = started_at + time::Duration::from_millis(2000);
-        let mut bus = bus::Bus::new(1);
+        let mut bus = bus::Bus::new_async(1);
 
         {
             let mut spawn_eager = |nr| spawn_deadlined(deadline, {
@@ -286,7 +286,7 @@ fn it_wakes_async_readers_with_writer_spawned_first() {
         let items = tokio_items;
         let started_at = time::Instant::now();
         let deadline = started_at + time::Duration::from_millis(2000);
-        let mut bus = bus::Bus::new(1);
+        let mut bus = bus::Bus::new_async(1);
 
         let intervals = vec![
             (bus.add_rx(), 1),
@@ -338,7 +338,7 @@ fn it_wakes_async_writers() {
         let items = tokio_items;
         let started_at = time::Instant::now();
         let deadline = started_at + time::Duration::from_millis(2000);
-        let mut bus = bus::Bus::new(1);
+        let mut bus = bus::Bus::new_async(1);
 
         {
             let mut spawn_interval = |nr, millis| spawn_deadlined(deadline, {
@@ -352,8 +352,8 @@ fn it_wakes_async_writers() {
                     .map_err(|_| unreachable!())
             });
 
-            spawn_interval(1, 75);
-            spawn_interval(2, 100);
+            spawn_interval(1, 25);
+            spawn_interval(2, 75);
             spawn_interval(3, 125);
         }
 
@@ -384,11 +384,11 @@ fn it_wakes_async_writers_with_writer_spawned_first() {
         let items = tokio_items;
         let started_at = time::Instant::now();
         let deadline = started_at + time::Duration::from_millis(2000);
-        let mut bus = bus::Bus::new(1);
+        let mut bus = bus::Bus::new_async(1);
 
         let intervals = vec![
-            (bus.add_rx(), 1, 75),
-            (bus.add_rx(), 2, 100),
+            (bus.add_rx(), 1, 25),
+            (bus.add_rx(), 2, 75),
             (bus.add_rx(), 3, 125),
         ];
 

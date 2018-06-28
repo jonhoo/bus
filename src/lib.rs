@@ -153,6 +153,109 @@ impl<T> Deref for MutSeatState<T> {
     }
 }
 
+/// TODO
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlockCondition {
+    /// TODO
+    Try,
+    /// TODO
+    Block,
+    /// TOTO
+    Timeout(time::Duration),
+}
+
+/// TODO
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlockOutcome {
+    /// TODO
+    DidBlock,
+    /// TODO
+    CannotBlock,
+}
+
+/// TODO
+pub trait Parkable: Sized + Send + 'static {
+    /// TODO
+    type PreparkState;
+
+    /// TODO
+    fn current() -> Self;
+
+    /// TODO
+    fn unpark(&self);
+
+    /// TODO
+    fn prepare(block: BlockCondition) -> Self::PreparkState;
+
+    /// TODO
+    fn maybe_park<F>(state: &mut Self::PreparkState, store_parked: F) -> BlockOutcome
+        where F: FnOnce(Self);
+}
+
+impl Parkable for thread::Thread {
+    type PreparkState = (BlockCondition, SpinWait, time::Instant);
+    fn current() -> Self { thread::current() }
+    fn unpark(&self) { thread::Thread::unpark(self) }
+
+    fn prepare(block: BlockCondition) -> Self::PreparkState {
+        (block, SpinWait::new(), time::Instant::now())
+    }
+
+    fn maybe_park<F>(state: &mut Self::PreparkState, store_parked: F) -> BlockOutcome
+        where F: FnOnce(Self),
+    {
+        let (block, sw, start) = state;
+        if *block == BlockCondition::Try {
+            return BlockOutcome::CannotBlock;
+        }
+        store_parked(Self::current());
+        let spintime = time::Duration::new(0, SPINTIME);
+        if sw.spin() { return BlockOutcome::DidBlock; }
+        match *block {
+            BlockCondition::Timeout(t) => {
+                match t.checked_sub(start.elapsed()) {
+                    Some(left) => {
+                        if left < spintime {
+                            thread::park_timeout(left);
+                        } else {
+                            thread::park_timeout(spintime);
+                        }
+                    }
+                    None => {
+                        // So, the wake-up thread is still going to try to wake us up later
+                        // since we sent thread::current() above, but that's fine.
+                        return BlockOutcome::CannotBlock;
+                    }
+                }
+            }
+            BlockCondition::Block => {
+                thread::park_timeout(spintime);
+            }
+            BlockCondition::Try => unreachable!(),
+        }
+        BlockOutcome::DidBlock
+    }
+}
+
+#[cfg(feature = "async")]
+mod async_impls {
+    use futures::task;
+    use super::{BlockCondition, BlockOutcome, Parkable};
+
+    impl Parkable for task::Task {
+        type PreparkState = ();
+        fn current() -> Self { task::current() }
+        fn unpark(&self) { task::Task::notify(self) }
+        fn prepare(block: BlockCondition) { assert_eq!(block, BlockCondition::Try); }
+        fn maybe_park<F>(_: &mut Self::PreparkState, store_parked: F) -> BlockOutcome
+            where F: FnOnce(Self),
+        {
+            store_parked(Self::current());
+            BlockOutcome::CannotBlock
+        }
+    }
+}
+
 /// A Seat is a single location in the circular buffer.
 /// Each Seat knows how many readers are expected to access it, as well as how many have. The
 /// producer will never modify a seat's state unless all readers for a particular seat have either
@@ -166,16 +269,16 @@ impl<T> Deref for MutSeatState<T> {
 ///
 /// The `read` attribute is used to ensure that readers see the most recent write to the seat when
 /// they access it. This is done using `atomic::Ordering::Acquire` and `atomic::Ordering::Release`.
-struct Seat<T> {
+struct Seat<T, P> {
     read: atomic::AtomicUsize,
     state: MutSeatState<T>,
 
     // is the writer waiting for this seat to be emptied? needs to be atomic since both the last
     // reader and the writer might be accessing it at the same time.
-    waiting: AtomicOption<thread::Thread>,
+    waiting: AtomicOption<P>,
 }
 
-impl<T: Clone + Sync> Seat<T> {
+impl<T: Clone + Sync, P: Parkable> Seat<T, P> {
     /// take is used by a reader to extract a copy of the value stored on this seat. only readers
     /// that were created strictly before the time this seat was last written to by the producer
     /// are allowed to call this method, and they may each only call it once.
@@ -242,7 +345,7 @@ impl<T: Clone + Sync> Seat<T> {
     }
 }
 
-impl<T> Default for Seat<T> {
+impl<T, P> Default for Seat<T, P> {
     fn default() -> Self {
         Seat {
             read: atomic::AtomicUsize::new(0),
@@ -255,8 +358,8 @@ impl<T> Default for Seat<T> {
 /// `BusInner` encapsulates data that both the writer and the readers need to access. The tail is
 /// only ever modified by the producer, and read by the consumers. The length of the bus is
 /// instantiated when the bus is created, and is never modified.
-struct BusInner<T> {
-    ring: Vec<Seat<T>>,
+struct BusInner<T, P> {
+    ring: Vec<Seat<T, P>>,
     len: usize,
     tail: atomic::AtomicUsize,
     closed: atomic::AtomicBool,
@@ -267,8 +370,8 @@ struct BusInner<T> {
 /// continue receiving any outstanding broadcast messages they would have received if the bus were
 /// not dropped. After all those messages have been received, any subsequent receive call on a
 /// receiver will return a disconnected error.
-pub struct Bus<T> {
-    state: Arc<BusInner<T>>,
+pub struct Bus<T, P = thread::Thread> {
+    state: Arc<BusInner<T, P>>,
 
     // current number of readers
     readers: usize,
@@ -284,25 +387,55 @@ pub struct Bus<T> {
     // are waiting
     #[cfg_attr(feature = "cargo-clippy", allow(type_complexity))]
     waiting: (
-        mpsc::Sender<(thread::Thread, usize)>,
-        mpsc::Receiver<(thread::Thread, usize)>,
+        mpsc::Sender<(P, usize)>,
+        mpsc::Receiver<(P, usize)>,
     ),
 
     // channel used to communicate to unparker that a given thread should be woken up
-    unpark: mpsc::Sender<thread::Thread>,
+    unpark: mpsc::Sender<P>,
 
     // cache used to keep track of threads waiting for next write.
     // this is only here to avoid allocating one on every broadcast()
-    cache: Vec<(thread::Thread, usize)>,
+    cache: Vec<(P, usize)>,
 }
 
-impl<T> Bus<T> {
+impl<T> Bus<T, thread::Thread> {
+    /// TODO forwards to with_parkable
+    pub fn new(len: usize) -> Self {
+        Bus::with_parkable(len)
+    }
+
+    /// Broadcasts a value on the bus to all consumers.
+    ///
+    /// This function will block until space in the internal buffer becomes available.
+    ///
+    /// Note that a successful send does not guarantee that the receiver will ever see the data if
+    /// there is a buffer on this channel. Items may be enqueued in the internal buffer for the
+    /// receiver to receive at a later time. Furthermore, in contrast to regular channels, a bus is
+    /// *not* considered closed if there are no consumers, and thus broadcasts will continue to
+    /// succeed.
+    pub fn broadcast(&mut self, val: T) {
+        if let Err(..) = self.broadcast_inner(val, <thread::Thread as Parkable>::prepare(BlockCondition::Block)) {
+            unreachable!("blocking broadcast_inner can't fail");
+        }
+    }
+}
+
+#[cfg(feature = "async")]
+impl<T> Bus<T, futures::task::Task> {
+    /// TODO forwards to with_parkable
+    pub fn new_async(len: usize) -> Self {
+        Bus::with_parkable(len)
+    }
+}
+
+impl<T, P: Parkable> Bus<T, P> {
     /// Allocates a new `Bus`.
     ///
     /// The provided length should be sufficient to absorb temporary peaks in the data flow, and is
     /// thus workflow-dependent. Bus performance degrades somewhat when the queue is full, so it is
     /// generally better to set this high than low unless you are pressed for memory.
-    pub fn new(mut len: usize) -> Bus<T> {
+    pub fn with_parkable(mut len: usize) -> Self {
         use std::iter;
 
         // ring buffer must have room for one padding element
@@ -318,7 +451,7 @@ impl<T> Bus<T> {
         // we run a separate thread responsible for unparking
         // so we don't have to wait for unpark() to return in broadcast_inner
         // sending on a channel without contention is cheap, unparking is not
-        let (unpark_tx, unpark_rx) = mpsc::channel::<thread::Thread>();
+        let (unpark_tx, unpark_rx) = mpsc::channel::<P>();
         thread::spawn(move || {
             for t in unpark_rx.iter() {
                 t.unpark();
@@ -355,7 +488,7 @@ impl<T> Bus<T> {
     /// again, and the broadcast will be tried again until it succeeds.
     ///
     /// Note that broadcasts will succeed even if there are no consumers!
-    fn broadcast_inner(&mut self, val: T, block: bool) -> Result<(), T> {
+    fn broadcast_inner(&mut self, val: T, mut prepark: P::PreparkState) -> Result<(), T> {
         let tail = self.state.tail.load(atomic::Ordering::Relaxed);
 
         // we want to check if the next element over is free to ensure that we always leave one
@@ -365,10 +498,6 @@ impl<T> Bus<T> {
         // reader).
         let fence = (tail + 1) % self.state.len;
 
-        let spintime = time::Duration::new(0, SPINTIME);
-
-        // to avoid parking when a slot frees up quickly, we use an exponential back-off SpinWait.
-        let mut sw = SpinWait::new();
         loop {
             let fence_read = self.state.ring[fence].read.load(atomic::Ordering::Acquire);
 
@@ -395,27 +524,20 @@ impl<T> Bus<T> {
             if fence_read == self.expected(fence) {
                 // yes! go ahead and write!
                 break;
-            } else if block {
+            }
+            match P::maybe_park(&mut prepark, |current| {
                 // no, so block by parking and telling readers to notify on last read
                 self.state.ring[fence]
                     .waiting
-                    .replace(Some(Box::new(thread::current())), atomic::Ordering::Relaxed);
+                    .replace(Some(Box::new(current)), atomic::Ordering::Relaxed);
 
                 // need the atomic fetch_add to ensure reader threads will see the new .waiting
                 self.state.ring[fence]
                     .read
                     .fetch_add(0, atomic::Ordering::Release);
-
-                if !sw.spin() {
-                    // not likely to get a slot soon -- wait to be unparked instead.
-                    // note that we *need* to wait, because there are some cases in which we
-                    // *won't* be unparked even though a slot has opened up.
-                    thread::park_timeout(spintime);
-                }
-                continue;
-            } else {
-                // no, and blocking isn't allowed, so return an error
-                return Err(val);
+            }) {
+                BlockOutcome::DidBlock => continue,
+                BlockOutcome::CannotBlock => return Err(val),
             }
         }
 
@@ -483,22 +605,7 @@ impl<T> Bus<T> {
     /// assert_eq!(tx.try_broadcast("world"), Err("world"));
     /// ```
     pub fn try_broadcast(&mut self, val: T) -> Result<(), T> {
-        self.broadcast_inner(val, false)
-    }
-
-    /// Broadcasts a value on the bus to all consumers.
-    ///
-    /// This function will block until space in the internal buffer becomes available.
-    ///
-    /// Note that a successful send does not guarantee that the receiver will ever see the data if
-    /// there is a buffer on this channel. Items may be enqueued in the internal buffer for the
-    /// receiver to receive at a later time. Furthermore, in contrast to regular channels, a bus is
-    /// *not* considered closed if there are no consumers, and thus broadcasts will continue to
-    /// succeed.
-    pub fn broadcast(&mut self, val: T) {
-        if let Err(..) = self.broadcast_inner(val, true) {
-            unreachable!("blocking broadcast_inner can't fail");
-        }
+        self.broadcast_inner(val, P::prepare(BlockCondition::Try))
     }
 
     /// Add a new consumer to this bus.
@@ -528,7 +635,7 @@ impl<T> Bus<T> {
     /// assert_eq!(rx1.recv(), Ok("world"));
     /// assert_eq!(rx2.recv(), Ok("world"));
     /// ```
-    pub fn add_rx(&mut self) -> BusReader<T> {
+    pub fn add_rx(&mut self) -> BusReader<T, P> {
         self.readers += 1;
 
         BusReader {
@@ -541,7 +648,7 @@ impl<T> Bus<T> {
     }
 }
 
-impl<T> Drop for Bus<T> {
+impl<T, P> Drop for Bus<T, P> {
     fn drop(&mut self) {
         self.state.closed.store(true, atomic::Ordering::Relaxed);
         // Acquire/Release .tail to ensure other threads see new .closed
@@ -552,7 +659,7 @@ impl<T> Drop for Bus<T> {
 }
 
 #[cfg(feature = "async")]
-impl<T: Clone + Sync> futures::Sink for Bus<T> {
+impl<T: Clone + Sync> futures::Sink for Bus<T, futures::task::Task> {
     type SinkItem = T;
     type SinkError = void::Void;
 
@@ -566,13 +673,6 @@ impl<T: Clone + Sync> futures::Sink for Bus<T> {
     fn poll_complete(&mut self) -> futures::Poll<(), Self::SinkError> {
         Ok(futures::Async::Ready(()))
     }
-}
-
-#[derive(Clone, Copy)]
-enum RecvCondition {
-    Try,
-    Block,
-    Timeout(time::Duration),
 }
 
 /// A `BusReader` is a single consumer of `Bus` broadcasts. It will see every new value that is
@@ -599,35 +699,27 @@ enum RecvCondition {
 /// drop(r2);
 /// assert_eq!(tx.try_broadcast(true), Ok(()));
 /// ```
-pub struct BusReader<T> {
-    bus: Arc<BusInner<T>>,
+pub struct BusReader<T, P = thread::Thread> {
+    bus: Arc<BusInner<T, P>>,
     head: usize,
     leaving: mpsc::Sender<usize>,
-    waiting: mpsc::Sender<(thread::Thread, usize)>,
+    waiting: mpsc::Sender<(P, usize)>,
     closed: bool,
 }
 
-impl<T: Clone + Sync> BusReader<T> {
+impl<T: Clone + Sync, P: Parkable> BusReader<T, P> {
     /// Attempts to read a broadcast from the bus.
     ///
     /// If the bus is empty, the behavior depends on `block`. If false,
     /// `Err(mpsc::RecvTimeoutError::Timeout)` is returned. Otherwise, the current thread will be
     /// parked until there is another broadcast on the bus, at which point the receive will be
     /// performed.
-    fn recv_inner(&mut self, block: RecvCondition) -> Result<T, mpsc::RecvTimeoutError> {
+    fn recv_inner(&mut self, mut prepark: P::PreparkState) -> Result<T, mpsc::RecvTimeoutError> {
         if self.closed {
             return Err(mpsc::RecvTimeoutError::Disconnected);
         }
 
-        let start = match block {
-            RecvCondition::Timeout(_) => Some(time::Instant::now()),
-            _ => None,
-        };
-
-        let spintime = time::Duration::new(0, SPINTIME);
-
         let mut was_closed = false;
-        let mut sw = SpinWait::new();
         let mut first = true;
         loop {
             let tail = self.bus.tail.load(atomic::Ordering::Acquire);
@@ -651,44 +743,19 @@ impl<T: Clone + Sync> BusReader<T> {
                 return Err(mpsc::RecvTimeoutError::Disconnected);
             }
 
-            // not closed, should we block?
-            if let RecvCondition::Try = block {
-                return Err(mpsc::RecvTimeoutError::Timeout);
-            }
-
-            // park and tell writer to notify on write
-            if first {
-                if let Err(..) = self.waiting.send((thread::current(), self.head)) {
-                    // writer has gone away, but this is not a reliable way to check
-                    // in particular, we may also have missed updates
-                    unimplemented!();
-                }
-                first = false;
-            }
-
-            if !sw.spin() {
-                match block {
-                    RecvCondition::Timeout(t) => {
-                        match t.checked_sub(start.as_ref().unwrap().elapsed()) {
-                            Some(left) => {
-                                if left < spintime {
-                                    thread::park_timeout(left);
-                                } else {
-                                    thread::park_timeout(spintime);
-                                }
-                            }
-                            None => {
-                                // So, the wake-up thread is still going to try to wake us up later
-                                // since we sent thread::current() above, but that's fine.
-                                return Err(mpsc::RecvTimeoutError::Timeout);
-                            }
-                        }
+            match P::maybe_park(&mut prepark, |current| {
+                // park and tell writer to notify on write
+                if first {
+                    if let Err(..) = self.waiting.send((current, self.head)) {
+                        // writer has gone away, but this is not a reliable way to check
+                        // in particular, we may also have missed updates
+                        unimplemented!();
                     }
-                    RecvCondition::Block => {
-                        thread::park_timeout(spintime);
-                    }
-                    RecvCondition::Try => unreachable!(),
+                    first = false;
                 }
+            }) {
+                BlockOutcome::DidBlock => (),
+                BlockOutcome::CannotBlock => return Err(mpsc::RecvTimeoutError::Timeout),
             }
         }
 
@@ -741,12 +808,14 @@ impl<T: Clone + Sync> BusReader<T> {
     /// j.join().unwrap();
     /// ```
     pub fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
-        self.recv_inner(RecvCondition::Try).map_err(|e| match e {
+        self.recv_inner(P::prepare(BlockCondition::Try)).map_err(|e| match e {
             mpsc::RecvTimeoutError::Disconnected => mpsc::TryRecvError::Disconnected,
             mpsc::RecvTimeoutError::Timeout => mpsc::TryRecvError::Empty,
         })
     }
+}
 
+impl<T: Clone + Sync> BusReader<T> {
     /// Read another broadcast message from the bus, and block if none are available.
     ///
     /// This function will always block the current thread if there is no data available and it's
@@ -758,7 +827,7 @@ impl<T: Clone + Sync> BusReader<T> {
     /// received on this channel. However, since channels are buffered, messages sent before the
     /// disconnect will still be properly received.
     pub fn recv(&mut self) -> Result<T, mpsc::RecvError> {
-        match self.recv_inner(RecvCondition::Block) {
+        match self.recv_inner(<thread::Thread as Parkable>::prepare(BlockCondition::Block)) {
             Ok(val) => Ok(val),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(mpsc::RecvError),
             _ => unreachable!("blocking recv_inner can't fail"),
@@ -791,11 +860,9 @@ impl<T: Clone + Sync> BusReader<T> {
     /// assert_eq!(Err(RecvTimeoutError::Timeout), rx.recv_timeout(timeout));
     /// ```
     pub fn recv_timeout(&mut self, timeout: time::Duration) -> Result<T, mpsc::RecvTimeoutError> {
-        self.recv_inner(RecvCondition::Timeout(timeout))
+        self.recv_inner(<thread::Thread as Parkable>::prepare(BlockCondition::Timeout(timeout)))
     }
-}
 
-impl<T> BusReader<T> {
     /// Returns an iterator that will block waiting for broadcasts. It will return `None` when the
     /// bus has been closed (i.e., the `Bus` has been dropped).
     pub fn iter(&mut self) -> BusIter<T> {
@@ -803,7 +870,7 @@ impl<T> BusReader<T> {
     }
 }
 
-impl<T> Drop for BusReader<T> {
+impl<T, P> Drop for BusReader<T, P> {
     #[allow(unused_must_use)]
     fn drop(&mut self) {
         // we allow not checking the result here because the writer might have gone away, which
@@ -813,7 +880,7 @@ impl<T> Drop for BusReader<T> {
 }
 
 #[cfg(feature = "async")]
-impl<T: Clone + Sync> futures::Stream for BusReader<T> {
+impl<T: Clone + Sync> futures::Stream for BusReader<T, futures::task::Task> {
     type Item = T;
     type Error = void::Void;
 
