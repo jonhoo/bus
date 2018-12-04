@@ -1,6 +1,6 @@
 [package]
 name = "bus"
-version = "2.0.0"
+version = "2.0.1"
 
 description = "A lock-free, bounded, single-producer, multi-consumer, broadcast channel."
 readme = "README.md"
@@ -18,6 +18,7 @@ license = "MIT/Apache-2.0"
 
 [badges]
 travis-ci = { repository = "jonhoo/bus" }
+maintenance = { status = "passively-maintained" }
 
 [features]
 bench = []
@@ -25,7 +26,7 @@ bench = []
 [dependencies]
 atomic-option = "0.1"
 num_cpus = "1.6.2"
-parking_lot_core = "0.2.2"
+parking_lot_core = "0.4"
 
 [profile.release]
 debug = true
