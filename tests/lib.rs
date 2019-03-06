@@ -71,6 +71,31 @@ fn it_iterates() {
 }
 
 #[test]
+fn aggressive_iteration() {
+    for _ in 0..10_000 {
+        use std::thread;
+
+        let mut tx = bus::Bus::new(2);
+        let mut rx = tx.add_rx();
+        let j = thread::spawn(move || {
+            for i in 0..1000 {
+                tx.broadcast(i);
+            }
+        });
+
+        let mut ii = 0;
+        for i in rx.iter() {
+            assert_eq!(i, ii);
+            ii += 1;
+        }
+
+        j.join().unwrap();
+        assert_eq!(ii, 1000);
+        assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+    }
+}
+
+#[test]
 fn it_detects_closure() {
     let mut tx = bus::Bus::new(1);
     let mut rx = tx.add_rx();

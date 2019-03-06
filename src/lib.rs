@@ -639,9 +639,10 @@ impl<T: Clone + Sync> BusReader<T> {
             // park and tell writer to notify on write
             if first {
                 if let Err(..) = self.waiting.send((thread::current(), self.head)) {
-                    // writer has gone away, but this is not a reliable way to check
-                    // in particular, we may also have missed updates
-                    unimplemented!();
+                    // writer has gone away, but somehow we _just_ missed the close signal (in
+                    // self.bus.closed). iterate again to ensure the channel is _actually_ empty.
+                    atomic::fence(atomic::Ordering::SeqCst);
+                    continue;
                 }
                 first = false;
             }
