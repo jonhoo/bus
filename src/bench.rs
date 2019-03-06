@@ -1,8 +1,8 @@
 extern crate bus;
 extern crate num_cpus;
 
-use std::time::{Duration, Instant};
 use bus::Bus;
+use std::time::{Duration, Instant};
 
 const USE_TRY_RECV: bool = false;
 const USE_TRY_SEND: bool = false;

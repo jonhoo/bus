@@ -125,8 +125,8 @@ fn it_runs_blocked_writes() {
 
 #[test]
 fn it_runs_blocked_reads() {
-    use std::thread;
     use std::sync::mpsc;
+    use std::thread;
 
     let mut tx = Box::new(bus::Bus::new(1));
     let mut rx = tx.add_rx();

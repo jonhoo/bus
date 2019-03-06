@@ -17,9 +17,9 @@
 //! happening for the single-consumer case. For cases where cloning is expensive, `Arc` should be
 //! used instead.
 //!
-//! In a single-producer, single-consumer setup (which is the only one that Bus and
-//! `mpsc::sync_channel` both support), Bus gets ~2x the performance of `mpsc::sync_channel` on
-//! my machine. YMMV. You can check your performance on Nightly using
+//! In a single-producer, single-consumer setup, Bus is ~7x faster then
+//! `std::sync::mpsc::sync_channel` on my machine. It's ~2x slower than `crossbeam-channel`. YMMV.
+//! You can check your performance on Nightly using
 //!
 //! ```console
 //! $ cargo bench --features bench
@@ -120,17 +120,19 @@ use atomic_option::AtomicOption;
 extern crate parking_lot_core;
 use parking_lot_core::SpinWait;
 
+extern crate crossbeam_channel;
+use crossbeam_channel as mpsc;
+
 #[cfg(feature = "bench")]
 extern crate test;
 
-use std::sync::atomic;
-use std::sync::mpsc;
-use std::thread;
-use std::time;
-
 use std::cell::UnsafeCell;
 use std::ops::Deref;
+use std::sync::atomic;
+use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
+use std::thread;
+use std::time;
 
 const SPINTIME: u32 = 100_000; //ns
 
@@ -313,7 +315,7 @@ impl<T> Bus<T> {
         // we run a separate thread responsible for unparking
         // so we don't have to wait for unpark() to return in broadcast_inner
         // sending on a channel without contention is cheap, unparking is not
-        let (unpark_tx, unpark_rx) = mpsc::channel::<thread::Thread>();
+        let (unpark_tx, unpark_rx) = mpsc::unbounded::<thread::Thread>();
         thread::spawn(move || {
             for t in unpark_rx.iter() {
                 t.unpark();
@@ -324,8 +326,8 @@ impl<T> Bus<T> {
             state: inner,
             readers: 0,
             rleft: iter::repeat(0).take(len).collect(),
-            leaving: mpsc::channel(),
-            waiting: mpsc::channel(),
+            leaving: mpsc::unbounded(),
+            waiting: mpsc::unbounded(),
             unpark: unpark_tx,
 
             cache: Vec::new(),
@@ -592,9 +594,9 @@ impl<T: Clone + Sync> BusReader<T> {
     /// `Err(mpsc::RecvTimeoutError::Timeout)` is returned. Otherwise, the current thread will be
     /// parked until there is another broadcast on the bus, at which point the receive will be
     /// performed.
-    fn recv_inner(&mut self, block: RecvCondition) -> Result<T, mpsc::RecvTimeoutError> {
+    fn recv_inner(&mut self, block: RecvCondition) -> Result<T, std_mpsc::RecvTimeoutError> {
         if self.closed {
-            return Err(mpsc::RecvTimeoutError::Disconnected);
+            return Err(std_mpsc::RecvTimeoutError::Disconnected);
         }
 
         let start = match block {
@@ -626,12 +628,12 @@ impl<T: Clone + Sync> BusReader<T> {
 
                 // the bus is closed, and we didn't miss anything!
                 self.closed = true;
-                return Err(mpsc::RecvTimeoutError::Disconnected);
+                return Err(std_mpsc::RecvTimeoutError::Disconnected);
             }
 
             // not closed, should we block?
             if let RecvCondition::Try = block {
-                return Err(mpsc::RecvTimeoutError::Timeout);
+                return Err(std_mpsc::RecvTimeoutError::Timeout);
             }
 
             // park and tell writer to notify on write
@@ -658,7 +660,7 @@ impl<T: Clone + Sync> BusReader<T> {
                             None => {
                                 // So, the wake-up thread is still going to try to wake us up later
                                 // since we sent thread::current() above, but that's fine.
-                                return Err(mpsc::RecvTimeoutError::Timeout);
+                                return Err(std_mpsc::RecvTimeoutError::Timeout);
                             }
                         }
                     }
@@ -718,10 +720,10 @@ impl<T: Clone + Sync> BusReader<T> {
     ///
     /// j.join().unwrap();
     /// ```
-    pub fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
+    pub fn try_recv(&mut self) -> Result<T, std_mpsc::TryRecvError> {
         self.recv_inner(RecvCondition::Try).map_err(|e| match e {
-            mpsc::RecvTimeoutError::Disconnected => mpsc::TryRecvError::Disconnected,
-            mpsc::RecvTimeoutError::Timeout => mpsc::TryRecvError::Empty,
+            std_mpsc::RecvTimeoutError::Disconnected => std_mpsc::TryRecvError::Disconnected,
+            std_mpsc::RecvTimeoutError::Timeout => std_mpsc::TryRecvError::Empty,
         })
     }
 
@@ -735,10 +737,10 @@ impl<T: Clone + Sync> BusReader<T> {
     /// this call will wake up and return `Err` to indicate that no more messages can ever be
     /// received on this channel. However, since channels are buffered, messages sent before the
     /// disconnect will still be properly received.
-    pub fn recv(&mut self) -> Result<T, mpsc::RecvError> {
+    pub fn recv(&mut self) -> Result<T, std_mpsc::RecvError> {
         match self.recv_inner(RecvCondition::Block) {
             Ok(val) => Ok(val),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(mpsc::RecvError),
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => Err(std_mpsc::RecvError),
             _ => unreachable!("blocking recv_inner can't fail"),
         }
     }
@@ -768,7 +770,10 @@ impl<T: Clone + Sync> BusReader<T> {
     /// let timeout = Duration::from_millis(100);
     /// assert_eq!(Err(RecvTimeoutError::Timeout), rx.recv_timeout(timeout));
     /// ```
-    pub fn recv_timeout(&mut self, timeout: time::Duration) -> Result<T, mpsc::RecvTimeoutError> {
+    pub fn recv_timeout(
+        &mut self,
+        timeout: time::Duration,
+    ) -> Result<T, std_mpsc::RecvTimeoutError> {
         self.recv_inner(RecvCondition::Timeout(timeout))
     }
 }
@@ -849,8 +854,40 @@ fn bench_bus_one_to_one(b: &mut test::Bencher) {
 
 #[cfg(feature = "bench")]
 #[bench]
+fn bench_crossbeam_bounded_one_to_one(b: &mut test::Bencher) {
+    let (tx, rx) = mpsc::bounded(100);
+    let j = thread::spawn(move || loop {
+        match rx.recv() {
+            Ok(exit) if exit => break,
+            Err(..) => break,
+            _ => (),
+        }
+    });
+    b.iter(|| tx.send(false).unwrap());
+    tx.send(true).unwrap();
+    j.join().unwrap();
+}
+
+#[cfg(feature = "bench")]
+#[bench]
+fn bench_crossbeam_one_to_one(b: &mut test::Bencher) {
+    let (tx, rx) = mpsc::unbounded();
+    let j = thread::spawn(move || loop {
+        match rx.recv() {
+            Ok(exit) if exit => break,
+            Err(..) => break,
+            _ => (),
+        }
+    });
+    b.iter(|| tx.send(false).unwrap());
+    tx.send(true).unwrap();
+    j.join().unwrap();
+}
+
+#[cfg(feature = "bench")]
+#[bench]
 fn bench_syncch_one_to_one(b: &mut test::Bencher) {
-    let (tx, rx) = mpsc::sync_channel(100);
+    let (tx, rx) = std_mpsc::sync_channel(100);
     let j = thread::spawn(move || loop {
         match rx.recv() {
             Ok(exit) if exit => break,
