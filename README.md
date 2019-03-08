@@ -3,6 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/bus.svg)](https://crates.io/crates/bus)
 [![Documentation](https://docs.rs/bus/badge.svg)](https://docs.rs/bus/)
 [![Build Status](https://travis-ci.org/jonhoo/bus.svg?branch=master)](https://travis-ci.org/jonhoo/bus)
+[![Codecov](https://codecov.io/github/jonhoo/bus/coverage.svg?branch=master)](https://codecov.io/gh/jonhoo/bus)
 
 Bus provides a lock-free, bounded, single-producer, multi-consumer, broadcast channel.
 
@@ -23,9 +24,9 @@ consumer to see a given value will move it instead of cloning, which means no cl
 happening for the single-consumer case. For cases where cloning is expensive, `Arc` should be
 used instead.
 
-In a single-producer, single-consumer setup (which is the only one that Bus and
-`mpsc::sync_channel` both support), Bus gets ~2x the performance of `mpsc::sync_channel` on
-my machine. YMMV. You can check your performance on Nightly using
+In a single-producer, single-consumer setup, Bus is ~7x faster then
+`std::sync::mpsc::sync_channel` on my machine. It's ~2x slower than `crossbeam-channel`. YMMV.
+You can check your performance on Nightly using
 
 ```console
 $ cargo bench --features bench
