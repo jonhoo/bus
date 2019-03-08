@@ -305,7 +305,7 @@ impl<T> Bus<T> {
         });
 
         // work around https://github.com/rust-lang/rust/issues/59020
-        let _ = time::Instant::now();
+        let _ = time::Instant::now().elapsed();
 
         // we run a separate thread responsible for unparking
         // so we don't have to wait for unpark() to return in broadcast_inner

@@ -1,6 +1,6 @@
 [package]
 name = "bus"
-version = "2.2.0"
+version = "2.2.1"
 authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
 edition = "2018"
 license = "MIT"
