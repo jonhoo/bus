@@ -53,19 +53,20 @@ fn helper(buf: usize, iter: usize, rxs: usize) -> u64 {
     }
 
     let dur = start.elapsed();
-    (dur.as_secs() * 1_000_000) + u64::from(dur.subsec_nanos() / 1000)
+    (dur.as_secs() * 1_000_000) + u64::from(dur.subsec_micros())
 }
 
 fn main() {
     let num = 2_000_000;
+    let buf = 1_000;
 
     for threads in 1..(2 * num_cpus::get()) {
         println!(
             "{} {} {:.*} μs/op",
             threads,
-            1_000,
+            buf,
             2,
-            helper(1_000, num, threads) as f64 / num as f64
+            helper(buf, num, threads) as f64 / num as f64
         );
     }
 }

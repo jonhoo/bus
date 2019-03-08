@@ -114,17 +114,9 @@
 #![deny(missing_docs)]
 #![cfg_attr(feature = "bench", feature(test))]
 
-extern crate atomic_option;
 use atomic_option::AtomicOption;
-
-extern crate parking_lot_core;
-use parking_lot_core::SpinWait;
-
-extern crate crossbeam_channel;
 use crossbeam_channel as mpsc;
-
-#[cfg(feature = "bench")]
-extern crate test;
+use parking_lot_core::SpinWait;
 
 use std::cell::UnsafeCell;
 use std::ops::Deref;
@@ -226,7 +218,7 @@ impl<T: Clone + Sync> Seat<T> {
 
         // let writer know that we no longer need this item.
         // state is no longer safe to access.
-        #[cfg_attr(feature = "cargo-clippy", allow(drop_ref))]
+        #[allow(clippy::drop_ref)]
         drop(state);
         self.read.fetch_add(1, atomic::Ordering::AcqRel);
 
@@ -279,7 +271,7 @@ pub struct Bus<T> {
 
     // waiting is used by receivers to signal that they are waiting for new entries, and where they
     // are waiting
-    #[cfg_attr(feature = "cargo-clippy", allow(type_complexity))]
+    #[allow(clippy::type_complexity)]
     waiting: (
         mpsc::Sender<(thread::Thread, usize)>,
         mpsc::Receiver<(thread::Thread, usize)>,
@@ -309,7 +301,7 @@ impl<T> Bus<T> {
             ring: (0..len).map(|_| Seat::default()).collect(),
             tail: atomic::AtomicUsize::new(0),
             closed: atomic::AtomicBool::new(false),
-            len: len,
+            len,
         });
 
         // work around https://github.com/rust-lang/rust/issues/59020
