@@ -312,6 +312,9 @@ impl<T> Bus<T> {
             len: len,
         });
 
+        // work around https://github.com/rust-lang/rust/issues/59020
+        let _ = time::Instant::now();
+
         // we run a separate thread responsible for unparking
         // so we don't have to wait for unpark() to return in broadcast_inner
         // sending on a channel without contention is cheap, unparking is not
