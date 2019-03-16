@@ -72,7 +72,7 @@ jobs:
         - RUSTFLAGS="--cfg procmacro2_semver_exempt" cargo install --force cargo-tarpaulin || true
         - cargo tarpaulin --out Xml
         - bash <(curl -s https://codecov.io/bash)
-        - cargo clean -p async-lease # ensure we don't cache build for coverage
+        - cargo clean -p bus # ensure we don't cache build for coverage
 stages:
  - check
  - test
