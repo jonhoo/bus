@@ -1,6 +1,6 @@
 [package]
 name = "bus"
-version = "2.2.1"
+version = "2.2.2"
 authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
 edition = "2018"
 license = "MIT"
@@ -22,7 +22,7 @@ bench = []
 [dependencies]
 atomic-option = "0.1"
 num_cpus = "1.6.2"
-parking_lot_core = "0.4"
+parking_lot_core = "0.5"
 crossbeam-channel = "0.3"
 
 [profile.release]
