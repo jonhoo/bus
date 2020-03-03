@@ -28,7 +28,7 @@ jobs:
        displayName: Enable debug symbols
      # only --lib --tests b/c of https://github.com/rust-lang/rust/issues/53945
      - script: |
-           env ASAN_OPTIONS="detect_odr_violation=0" RUSTFLAGS="-Z sanitizer=address" cargo test --lib --tests --target x86_64-unknown-linux-gnu
+           env ASAN_OPTIONS="detect_odr_violation=0" RUSTFLAGS="-Z sanitizer=address" cargo test --lib --tests --target x86_64-unknown-linux-gnu -- --test-threads=1
        displayName: cargo -Z sanitizer=address test
  - job: lsan
    displayName: "Run leak sanitizer on test suite"
@@ -45,7 +45,7 @@ jobs:
            cat Cargo.toml
        displayName: Enable debug symbols
      - script: |
-           env RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-linux-gnu
+           env RUSTFLAGS="-Z sanitizer=leak" cargo test --target x86_64-unknown-linux-gnu -- --test-threads=1
        displayName: cargo -Z sanitizer=leak test
  - template: coverage.yml@templates
    parameters:
