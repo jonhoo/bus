@@ -1,7 +1,7 @@
 jobs:
  - template: default.yml@templates
    parameters:
-     minrust: 1.31.1
+     minrust: 1.36.0 # MaybeUninit
  - job: miri
    displayName: "Run miri on test suite"
    pool:
