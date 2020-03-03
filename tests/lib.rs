@@ -48,6 +48,7 @@ fn it_reads_when_full() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn it_iterates() {
     use std::thread;
 
@@ -71,6 +72,7 @@ fn it_iterates() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn aggressive_iteration() {
     for _ in 0..1_000 {
         use std::thread;
@@ -128,6 +130,7 @@ fn it_handles_leaves() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn it_runs_blocked_writes() {
     use std::thread;
 
@@ -149,6 +152,7 @@ fn it_runs_blocked_writes() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn it_runs_blocked_reads() {
     use std::sync::mpsc;
     use std::thread;
@@ -168,6 +172,7 @@ fn it_runs_blocked_reads() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn it_can_count_to_10000() {
     use std::thread;
 
@@ -188,6 +193,7 @@ fn it_can_count_to_10000() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn test_busy() {
     use std::thread;
 
