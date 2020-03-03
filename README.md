@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/bus.svg)](https://crates.io/crates/bus)
 [![Documentation](https://docs.rs/bus/badge.svg)](https://docs.rs/bus/)
-[![Build Status](https://travis-ci.org/jonhoo/bus.svg?branch=master)](https://travis-ci.org/jonhoo/bus)
+[![Build Status](https://dev.azure.com/jonhoo/jonhoo/_apis/build/status/bus?branchName=master)](https://dev.azure.com/jonhoo/jonhoo/_build/latest?definitionId=20&branchName=master)
 [![Codecov](https://codecov.io/github/jonhoo/bus/coverage.svg?branch=master)](https://codecov.io/gh/jonhoo/bus)
 
 Bus provides a lock-free, bounded, single-producer, multi-consumer, broadcast channel.
