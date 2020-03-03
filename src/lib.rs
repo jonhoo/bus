@@ -112,6 +112,7 @@
 //! ```
 
 #![deny(missing_docs)]
+#![warn(rust_2018_idioms)]
 #![cfg_attr(feature = "bench", feature(test))]
 
 use atomic_option::AtomicOption;
@@ -777,7 +778,7 @@ impl<T: Clone + Sync> BusReader<T> {
 impl<T> BusReader<T> {
     /// Returns an iterator that will block waiting for broadcasts. It will return `None` when the
     /// bus has been closed (i.e., the `Bus` has been dropped).
-    pub fn iter(&mut self) -> BusIter<T> {
+    pub fn iter(&mut self) -> BusIter<'_, T> {
         BusIter(self)
     }
 }
@@ -794,7 +795,7 @@ impl<T> Drop for BusReader<T> {
 /// An iterator over messages on a receiver. This iterator will block whenever `next` is called,
 /// waiting for a new message, and `None` will be returned when the corresponding channel has been
 /// closed.
-pub struct BusIter<'a, T: 'a>(&'a mut BusReader<T>);
+pub struct BusIter<'a, T>(&'a mut BusReader<T>);
 
 /// An owning iterator over messages on a receiver. This iterator will block whenever `next` is
 /// called, waiting for a new message, and `None` will be returned when the corresponding bus has
