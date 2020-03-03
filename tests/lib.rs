@@ -72,7 +72,7 @@ fn it_iterates() {
 
 #[test]
 fn aggressive_iteration() {
-    for _ in 0..10_000 {
+    for _ in 0..1_000 {
         use std::thread;
 
         let mut tx = bus::Bus::new(2);
