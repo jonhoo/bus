@@ -4,15 +4,16 @@ version = "2.2.2"
 authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
 edition = "2018"
 license = "MIT"
-homepage = "https://github.com/jonhoo/bus"
-repository = "https://github.com/jonhoo/bus.git"
+
+readme = "README.md"
 description = "A lock-free, bounded, single-producer, multi-consumer, broadcast channel."
-categories = ["concurrency"]
+repository = "https://github.com/jonhoo/bus.git"
 
 keywords = ["channel","broadcast","lock-free"]
+categories = ["concurrency"]
 
 [badges]
-travis-ci = { repository = "jonhoo/bus" }
+azure-devops = { project = "jonhoo/jonhoo", pipeline = "bus", build = "20" }
 codecov = { repository = "jonhoo/bus", branch = "master", service = "github" }
 maintenance = { status = "passively-maintained" }
 
@@ -22,8 +23,8 @@ bench = []
 [dependencies]
 atomic-option = "0.1"
 num_cpus = "1.6.2"
-parking_lot_core = "0.5"
-crossbeam-channel = "0.3"
+parking_lot_core = "0.7"
+crossbeam-channel = "0.4"
 
 [profile.release]
 debug = true
