@@ -17,21 +17,6 @@
 //! happening for the single-consumer case. For cases where cloning is expensive, `Arc` should be
 //! used instead.
 //!
-//! In a single-producer, single-consumer setup, Bus is ~7x faster then
-//! `std::sync::mpsc::sync_channel` on my machine. It's ~2x slower than `crossbeam-channel`. YMMV.
-//! You can check your performance on Nightly using
-//!
-//! ```console
-//! $ cargo bench --features bench
-//! ```
-//!
-//! To see multi-consumer results, run the benchmark utility instead (should work on stable too)
-//!
-//! ```console
-//! $ cargo build --bin bench --release
-//! $ target/release/bench
-//! ```
-//!
 //! # Examples
 //!
 //! Single-send, multi-consumer example
@@ -113,7 +98,6 @@
 
 #![deny(missing_docs)]
 #![warn(rust_2018_idioms)]
-#![cfg_attr(feature = "bench", feature(test))]
 
 use atomic_option::AtomicOption;
 use crossbeam_channel as mpsc;
@@ -830,69 +814,4 @@ impl<T: Clone + Sync> Iterator for BusIntoIter<T> {
     fn next(&mut self) -> Option<T> {
         self.0.recv().ok()
     }
-}
-
-#[cfg(feature = "bench")]
-#[bench]
-fn bench_bus_one_to_one(b: &mut test::Bencher) {
-    let mut c = Bus::new(100);
-    let mut rx = c.add_rx();
-    let j = thread::spawn(move || loop {
-        match rx.recv() {
-            Ok(exit) if exit => break,
-            Err(..) => break,
-            _ => (),
-        }
-    });
-    b.iter(|| c.broadcast(false));
-    c.broadcast(true);
-    j.join().unwrap();
-}
-
-#[cfg(feature = "bench")]
-#[bench]
-fn bench_crossbeam_bounded_one_to_one(b: &mut test::Bencher) {
-    let (tx, rx) = mpsc::bounded(100);
-    let j = thread::spawn(move || loop {
-        match rx.recv() {
-            Ok(exit) if exit => break,
-            Err(..) => break,
-            _ => (),
-        }
-    });
-    b.iter(|| tx.send(false).unwrap());
-    tx.send(true).unwrap();
-    j.join().unwrap();
-}
-
-#[cfg(feature = "bench")]
-#[bench]
-fn bench_crossbeam_one_to_one(b: &mut test::Bencher) {
-    let (tx, rx) = mpsc::unbounded();
-    let j = thread::spawn(move || loop {
-        match rx.recv() {
-            Ok(exit) if exit => break,
-            Err(..) => break,
-            _ => (),
-        }
-    });
-    b.iter(|| tx.send(false).unwrap());
-    tx.send(true).unwrap();
-    j.join().unwrap();
-}
-
-#[cfg(feature = "bench")]
-#[bench]
-fn bench_syncch_one_to_one(b: &mut test::Bencher) {
-    let (tx, rx) = std_mpsc::sync_channel(100);
-    let j = thread::spawn(move || loop {
-        match rx.recv() {
-            Ok(exit) if exit => break,
-            Err(..) => break,
-            _ => (),
-        }
-    });
-    b.iter(|| tx.send(false).unwrap());
-    tx.send(true).unwrap();
-    j.join().unwrap();
 }
