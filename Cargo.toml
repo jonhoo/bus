@@ -3,7 +3,7 @@ name = "bus"
 version = "2.2.2"
 authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
 edition = "2018"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 
 readme = "README.md"
 description = "A lock-free, bounded, single-producer, multi-consumer, broadcast channel."
