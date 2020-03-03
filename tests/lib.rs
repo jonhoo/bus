@@ -54,7 +54,7 @@ fn it_iterates() {
     let mut tx = bus::Bus::new(2);
     let mut rx = tx.add_rx();
     let j = thread::spawn(move || {
-        for i in 0..1000 {
+        for i in 0..1_000 {
             tx.broadcast(i);
         }
     });
@@ -66,7 +66,7 @@ fn it_iterates() {
     }
 
     j.join().unwrap();
-    assert_eq!(ii, 1000);
+    assert_eq!(ii, 1_000);
     assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Disconnected));
 }
 
@@ -78,7 +78,7 @@ fn aggressive_iteration() {
         let mut tx = bus::Bus::new(2);
         let mut rx = tx.add_rx();
         let j = thread::spawn(move || {
-            for i in 0..1000 {
+            for i in 0..1_000 {
                 tx.broadcast(i);
             }
         });
@@ -90,7 +90,7 @@ fn aggressive_iteration() {
         }
 
         j.join().unwrap();
-        assert_eq!(ii, 1000);
+        assert_eq!(ii, 1_000);
         assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Disconnected));
     }
 }
