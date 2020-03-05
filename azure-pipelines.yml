@@ -9,7 +9,7 @@ jobs:
    steps:
      - template: install-rust.yml@templates
        parameters:
-         rust: nightly-2020-02-25
+         rust: nightly
          components:
            - miri
      # ignore leaks due to https://github.com/crossbeam-rs/crossbeam/issues/464
