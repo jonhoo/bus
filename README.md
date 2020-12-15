@@ -7,6 +7,8 @@
 
 Bus provides a lock-free, bounded, single-producer, multi-consumer, broadcast channel.
 
+> NOTE!: There is an issue in the current implementation which causes CPU usage during idle operation. See [#23](https://github.com/jonhoo/bus/issues/23). Consider using [tokio::sync::broadcast](https://docs.rs/tokio/0.3.5/tokio/sync/broadcast/) instead of this crate.
+
 It uses a circular buffer and atomic instructions to implement a lock-free single-producer,
 multi-consumer channel. The interface is similar to that of the `std::sync::mpsc` channels,
 except that multiple consumers (readers of the channel) can be produced, whereas only a single
