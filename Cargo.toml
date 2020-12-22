@@ -20,7 +20,7 @@ maintenance = { status = "passively-maintained" }
 [dependencies]
 atomic-option = "0.1"
 num_cpus = "1.6.2"
-parking_lot_core = "0.7"
+parking_lot_core = "0.8"
 crossbeam-channel = "0.5"
 
 [profile.release]
