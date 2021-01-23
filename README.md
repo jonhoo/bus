@@ -7,6 +7,8 @@
 
 Bus provides a lock-free, bounded, single-producer, multi-consumer, broadcast channel.
 
+**NOTE: bus sometimes busy-waits in the current implementation, which may cause increased CPU usage — see [#23](https://github.com/jonhoo/bus/issues/23).**
+
 It uses a circular buffer and atomic instructions to implement a lock-free single-producer,
 multi-consumer channel. The interface is similar to that of the `std::sync::mpsc` channels,
 except that multiple consumers (readers of the channel) can be produced, whereas only a single
