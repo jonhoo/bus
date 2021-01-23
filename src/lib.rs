@@ -672,7 +672,7 @@ impl<T: Clone + Sync> BusReader<T> {
     /// If the corresponding bus has been dropped, and all broadcasts have been received, this
     /// method will return with a disconnected error.
     ///
-    /// This mehtod is useful for a flavor of "optimistic check" before deciding to block on a
+    /// This method is useful for a flavor of "optimistic check" before deciding to block on a
     /// receiver.
     ///
     /// ```rust
