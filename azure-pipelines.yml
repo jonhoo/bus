@@ -13,7 +13,7 @@ jobs:
          components:
            - miri
      # ignore leaks due to https://github.com/crossbeam-rs/crossbeam/issues/464
-     - bash: yes | cargo miri -Zmiri-ignore-leaks test
+     - bash: MIRIFLAGS="-Zmiri-ignore-leaks" cargo miri test
        displayName: cargo miri test
  - job: asan
    displayName: "Run address sanitizer on test suite"

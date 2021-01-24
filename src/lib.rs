@@ -201,10 +201,6 @@ impl<T: Clone + Sync> Seat<T> {
                 .expect("seat that should be occupied was empty")
         };
 
-        // let writer know that we no longer need this item.
-        // state is no longer safe to access.
-        #[allow(clippy::drop_ref)]
-        drop(state);
         self.read.fetch_add(1, atomic::Ordering::AcqRel);
 
         if let Some(t) = waiting {
