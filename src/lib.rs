@@ -35,6 +35,7 @@
 //! Multi-send, multi-consumer example
 //!
 //! ```rust
+//! # if cfg!(miri) { return } // Miri is too slow
 //! use bus::Bus;
 //! use std::thread;
 //!
