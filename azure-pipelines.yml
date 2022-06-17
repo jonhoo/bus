@@ -12,7 +12,7 @@ jobs:
      # ignore leaks due to https://github.com/crossbeam-rs/crossbeam/issues/464
      # disable preemption due to https://github.com/rust-lang/rust/issues/55005
      # disable weak memory emulation due to https://github.com/rust-lang/miri/issues/2223
-     - bash: MIRIFLAGS="-Zmiri-ignore-leaks -Zmiri-preemption-rate=0 -Zmiri-disable-weak-memory-emulation" cargo miri test
+     - bash: MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-preemption-rate=0 -Zmiri-disable-weak-memory-emulation" cargo miri test
        displayName: cargo miri test
  - job: asan
    displayName: "Run address sanitizer on test suite"
