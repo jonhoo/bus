@@ -1,7 +1,7 @@
 jobs:
  - template: default.yml@templates
    parameters:
-     minrust: 1.36.0 # MaybeUninit
+     minrust: 1.49.0 # parking_lot_core
  - job: miri
    displayName: "Run miri on test suite"
    pool:
