@@ -195,16 +195,18 @@ impl<T: Clone + Sync> Seat<T> {
             // safely take a mutable reference, and just take the val instead of cloning it.
             unsafe { &mut *self.state.get() }.val.take().unwrap()
         } else {
-            state
+            let v = state
                 .val
                 .clone()
-                .expect("seat that should be occupied was empty")
+                .expect("seat that should be occupied was empty");
+
+            // let writer know that we no longer need this item.
+            // state is no longer safe to access.
+            #[allow(clippy::drop_ref)]
+            drop(state);
+            v
         };
 
-        // let writer know that we no longer need this item.
-        // state is no longer safe to access.
-        #[allow(clippy::drop_ref)]
-        drop(state);
         self.read.fetch_add(1, atomic::Ordering::AcqRel);
 
         if let Some(t) = waiting {
