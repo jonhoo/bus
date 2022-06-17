@@ -7,11 +7,8 @@ jobs:
    pool:
      vmImage: ubuntu-latest
    steps:
-     - template: install-rust.yml@templates
-       parameters:
-         rust: nightly
-         components:
-           - miri
+     - bash: rustup toolchain install nightly --component miri && rustup default nightly
+       displayName: install rust
      # ignore leaks due to https://github.com/crossbeam-rs/crossbeam/issues/464
      # disable preemption due to https://github.com/rust-lang/rust/issues/55005
      # disable weak memory emulation due to https://github.com/rust-lang/miri/issues/2223
