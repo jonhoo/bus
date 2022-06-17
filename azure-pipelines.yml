@@ -5,7 +5,7 @@ jobs:
  - job: miri
    displayName: "Run miri on test suite"
    pool:
-     vmImage: ubuntu-16.04
+     vmImage: ubuntu-latest
    steps:
      - template: install-rust.yml@templates
        parameters:
@@ -20,7 +20,7 @@ jobs:
  - job: asan
    displayName: "Run address sanitizer on test suite"
    pool:
-     vmImage: ubuntu-16.04
+     vmImage: ubuntu-latest
    steps:
      - template: install-rust.yml@templates
        parameters:
@@ -35,7 +35,7 @@ jobs:
  - job: lsan
    displayName: "Run leak sanitizer on test suite"
    pool:
-     vmImage: ubuntu-16.04
+     vmImage: ubuntu-latest
    steps:
      - template: install-rust.yml@templates
        parameters:
