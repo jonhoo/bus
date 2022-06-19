@@ -1,24 +1,23 @@
 jobs:
  - template: default.yml@templates
    parameters:
-     minrust: 1.36.0 # MaybeUninit
+     minrust: 1.49.0 # parking_lot_core
  - job: miri
    displayName: "Run miri on test suite"
    pool:
-     vmImage: ubuntu-16.04
+     vmImage: ubuntu-latest
    steps:
-     - template: install-rust.yml@templates
-       parameters:
-         rust: nightly
-         components:
-           - miri
+     - bash: rustup toolchain install nightly --component miri && rustup default nightly
+       displayName: install rust
      # ignore leaks due to https://github.com/crossbeam-rs/crossbeam/issues/464
-     - bash: yes | cargo miri -Zmiri-ignore-leaks test
+     # disable preemption due to https://github.com/rust-lang/rust/issues/55005
+     # disable weak memory emulation due to https://github.com/rust-lang/miri/issues/2223
+     - bash: MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-preemption-rate=0 -Zmiri-disable-weak-memory-emulation" cargo miri test
        displayName: cargo miri test
  - job: asan
    displayName: "Run address sanitizer on test suite"
    pool:
-     vmImage: ubuntu-16.04
+     vmImage: ubuntu-latest
    steps:
      - template: install-rust.yml@templates
        parameters:
@@ -33,7 +32,7 @@ jobs:
  - job: lsan
    displayName: "Run leak sanitizer on test suite"
    pool:
-     vmImage: ubuntu-16.04
+     vmImage: ubuntu-latest
    steps:
      - template: install-rust.yml@templates
        parameters:
@@ -58,5 +57,5 @@ resources:
     - repository: templates
       type: github
       name: crate-ci/azure-pipelines
-      ref: refs/heads/v0.3
+      ref: refs/heads/v0.4
       endpoint: jonhoo

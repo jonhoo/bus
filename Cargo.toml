@@ -18,10 +18,9 @@ codecov = { repository = "jonhoo/bus", branch = "master", service = "github" }
 maintenance = { status = "passively-maintained" }
 
 [dependencies]
-atomic-option = "0.1"
 num_cpus = "1.6.2"
-parking_lot_core = "0.7"
-crossbeam-channel = "0.4"
+parking_lot_core = "0.9"
+crossbeam-channel = "0.5"
 
 [profile.release]
 debug = true
