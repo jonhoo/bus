@@ -120,6 +120,7 @@ struct SeatState<T> {
     val: Option<T>,
 }
 
+#[derive(Debug)]
 struct MutSeatState<T>(UnsafeCell<SeatState<T>>);
 unsafe impl<T> Sync for MutSeatState<T> {}
 impl<T> Deref for MutSeatState<T> {
@@ -142,6 +143,7 @@ impl<T> Deref for MutSeatState<T> {
 ///
 /// The `read` attribute is used to ensure that readers see the most recent write to the seat when
 /// they access it. This is done using `atomic::Ordering::Acquire` and `atomic::Ordering::Release`.
+#[derive(Debug)]
 struct Seat<T> {
     read: atomic::AtomicUsize,
     state: MutSeatState<T>,
@@ -233,6 +235,7 @@ impl<T> Default for Seat<T> {
 /// `BusInner` encapsulates data that both the writer and the readers need to access. The tail is
 /// only ever modified by the producer, and read by the consumers. The length of the bus is
 /// instantiated when the bus is created, and is never modified.
+#[derive(Debug)]
 struct BusInner<T> {
     ring: Vec<Seat<T>>,
     len: usize,
@@ -245,6 +248,7 @@ struct BusInner<T> {
 /// continue receiving any outstanding broadcast messages they would have received if the bus were
 /// not dropped. After all those messages have been received, any subsequent receive call on a
 /// receiver will return a disconnected error.
+#[derive(Debug)]
 pub struct Bus<T> {
     state: Arc<BusInner<T>>,
 
@@ -565,6 +569,7 @@ enum RecvCondition {
 /// drop(r2);
 /// assert_eq!(tx.try_broadcast(true), Ok(()));
 /// ```
+#[derive(Debug)]
 pub struct BusReader<T> {
     bus: Arc<BusInner<T>>,
     head: usize,
@@ -785,11 +790,13 @@ impl<T> Drop for BusReader<T> {
 /// An iterator over messages on a receiver. This iterator will block whenever `next` is called,
 /// waiting for a new message, and `None` will be returned when the corresponding channel has been
 /// closed.
+#[derive(Debug)]
 pub struct BusIter<'a, T>(&'a mut BusReader<T>);
 
 /// An owning iterator over messages on a receiver. This iterator will block whenever `next` is
 /// called, waiting for a new message, and `None` will be returned when the corresponding bus has
 /// been closed.
+#[derive(Debug)]
 pub struct BusIntoIter<T>(BusReader<T>);
 
 impl<'a, T: Clone + Sync> IntoIterator for &'a mut BusReader<T> {
@@ -822,6 +829,7 @@ impl<T: Clone + Sync> Iterator for BusIntoIter<T> {
     }
 }
 
+#[derive(Debug)]
 struct AtomicOption<T> {
     ptr: atomic::AtomicPtr<T>,
     _marker: PhantomData<Option<Box<T>>>,
