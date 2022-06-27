@@ -115,6 +115,7 @@ use std::time;
 
 const SPINTIME: u32 = 100_000; //ns
 
+#[derive(Debug)]
 struct SeatState<T> {
     max: usize,
     val: Option<T>,
