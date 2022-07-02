@@ -12,11 +12,6 @@ repository = "https://github.com/jonhoo/bus.git"
 keywords = ["channel","broadcast","lock-free"]
 categories = ["concurrency"]
 
-[badges]
-azure-devops = { project = "jonhoo/jonhoo", pipeline = "bus", build = "20" }
-codecov = { repository = "jonhoo/bus", branch = "master", service = "github" }
-maintenance = { status = "passively-maintained" }
-
 [dependencies]
 num_cpus = "1.6.2"
 parking_lot_core = "0.9"
