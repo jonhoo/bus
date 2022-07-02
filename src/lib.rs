@@ -104,6 +104,7 @@ use crossbeam_channel as mpsc;
 use parking_lot_core::SpinWait;
 
 use std::cell::UnsafeCell;
+use std::fmt;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr;
@@ -129,6 +130,12 @@ impl<T> Deref for MutSeatState<T> {
     }
 }
 
+impl<T> fmt::Debug for MutSeatState<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("MutSeatState").field(&self.0).finish()
+    }
+}
+
 /// A Seat is a single location in the circular buffer.
 /// Each Seat knows how many readers are expected to access it, as well as how many have. The
 /// producer will never modify a seat's state unless all readers for a particular seat have either
@@ -149,6 +156,16 @@ struct Seat<T> {
     // is the writer waiting for this seat to be emptied? needs to be atomic since both the last
     // reader and the writer might be accessing it at the same time.
     waiting: AtomicOption<thread::Thread>,
+}
+
+impl<T> fmt::Debug for Seat<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Seat")
+            .field("read", &self.read)
+            .field("state", &self.state)
+            .field("waiting", &self.waiting)
+            .finish()
+    }
 }
 
 impl<T: Clone + Sync> Seat<T> {
@@ -240,6 +257,17 @@ struct BusInner<T> {
     closed: atomic::AtomicBool,
 }
 
+impl<T> fmt::Debug for BusInner<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BusInner")
+            .field("ring", &self.ring)
+            .field("len", &self.len)
+            .field("tail", &self.tail)
+            .field("closed", &self.closed)
+            .finish()
+    }
+}
+
 /// `Bus` is the main interconnect for broadcast messages. It can be used to send broadcast
 /// messages, or to connect additional consumers. When the `Bus` is dropped, receivers will
 /// continue receiving any outstanding broadcast messages they would have received if the bus were
@@ -272,6 +300,20 @@ pub struct Bus<T> {
     // cache used to keep track of threads waiting for next write.
     // this is only here to avoid allocating one on every broadcast()
     cache: Vec<(thread::Thread, usize)>,
+}
+
+impl<T> fmt::Debug for Bus<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Bus")
+            .field("state", &self.state)
+            .field("readers", &self.readers)
+            .field("rleft", &self.rleft)
+            .field("leaving", &self.leaving)
+            .field("waiting", &self.waiting)
+            .field("unpark", &self.unpark)
+            .field("cache", &self.cache)
+            .finish()
+    }
 }
 
 impl<T> Bus<T> {
@@ -825,6 +867,14 @@ impl<T: Clone + Sync> Iterator for BusIntoIter<T> {
 struct AtomicOption<T> {
     ptr: atomic::AtomicPtr<T>,
     _marker: PhantomData<Option<Box<T>>>,
+}
+
+impl<T> fmt::Debug for AtomicOption<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AtomicOption")
+            .field("ptr", &self.ptr)
+            .finish()
+    }
 }
 
 unsafe impl<T: Send> Send for AtomicOption<T> {}
