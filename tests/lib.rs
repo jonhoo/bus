@@ -14,6 +14,36 @@ fn it_works() {
 }
 
 #[test]
+fn debug() {
+    let mut c = bus::Bus::new(10);
+    println!("{:?}", c);
+    let mut r = c.add_rx();
+    println!("{:?}", c);
+    println!("{:?}", r);
+    assert_eq!(c.try_broadcast(true), Ok(()));
+    println!("{:?}", c);
+    assert_eq!(r.try_recv(), Ok(true));
+    println!("{:?}", c);
+}
+
+#[test]
+fn debug_not_inner() {
+    // Foo does not implement Debug
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct Foo;
+
+    let mut c = bus::Bus::new(10);
+    println!("{:?}", c);
+    let mut r = c.add_rx();
+    println!("{:?}", c);
+    println!("{:?}", r);
+    assert!(matches!(c.try_broadcast(Foo), Ok(())));
+    println!("{:?}", c);
+    assert!(matches!(r.try_recv(), Ok(Foo)));
+    println!("{:?}", c);
+}
+
+#[test]
 fn it_fails_when_full() {
     let mut c = bus::Bus::new(1);
     let r1 = c.add_rx();
