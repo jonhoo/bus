@@ -615,6 +615,18 @@ pub struct BusReader<T> {
     closed: bool,
 }
 
+impl<T> fmt::Debug for BusReader<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BusReader")
+            .field("bus", &self.bus)
+            .field("head", &self.head)
+            .field("leaving", &self.leaving)
+            .field("waiting", &self.waiting)
+            .field("closed", &self.closed)
+            .finish()
+    }
+}
+
 impl<T: Clone + Sync> BusReader<T> {
     /// Attempts to read a broadcast from the bus.
     ///
