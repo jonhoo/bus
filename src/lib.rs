@@ -98,7 +98,7 @@
 //! ```
 
 #![deny(missing_docs)]
-#![warn(rust_2018_idioms)]
+#![warn(rust_2018_idioms, rust_2021_compatibility)]
 
 use crossbeam_channel as mpsc;
 use parking_lot_core::SpinWait;
