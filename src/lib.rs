@@ -568,7 +568,7 @@ impl<T> Bus<T> {
     /// Returns the number of active consumers currently attached to this bus.
     ///
     /// It is not guaranteed that a sent message will reach this number of consumers. Active
-    /// consumbers may never call `recv` or `try_recv` again before dropping.
+    /// consumers may never call `recv` or `try_recv` again before dropping.
     ///
     /// # Examples
     ///
