@@ -1,0 +1,56 @@
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main]
+  pull_request:
+name: safety
+jobs:
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@nightly
+      - run: |
+            # to get the symbolizer for debug symbol resolution
+            sudo apt install llvm
+            # to fix buggy leak analyzer:
+            # https://github.com/japaric/rust-san#unrealiable-leaksanitizer
+            sed -i '/\[features\]/i [profile.dev]' Cargo.toml
+            sed -i '/profile.dev/a opt-level = 1' Cargo.toml
+            cat Cargo.toml
+        name: Enable debug symbols
+      - name: cargo test -Zsanitizer=address
+        # only --lib --tests b/c of https://github.com/rust-lang/rust/issues/53945
+        run: cargo test --lib --tests --all-features --target x86_64-unknown-linux-gnu
+        env:
+          ASAN_OPTIONS: "detect_odr_violation=0"
+          RUSTFLAGS: "-Z sanitizer=address"
+      - name: cargo test -Zsanitizer=leak
+        if: always()
+        run: cargo test --all-features --target x86_64-unknown-linux-gnu
+        env:
+          LSAN_OPTIONS: "suppressions=lsan-suppressions.txt"
+          RUSTFLAGS: "-Z sanitizer=leak"
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+      - run: |
+          echo "NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)" >> $GITHUB_ENV
+      - name: Install ${{ env.NIGHTLY }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.NIGHTLY }}
+          components: miri
+      - name: cargo miri test
+        run: cargo miri test
+        env:
+          # ignore leaks due to https://github.com/rust-lang/miri/issues/1371
+          # no isolation since we use time in there
+          MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-ignore-leaks"
