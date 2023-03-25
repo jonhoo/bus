@@ -564,6 +564,29 @@ impl<T> Bus<T> {
             closed: false,
         }
     }
+
+    /// Returns the number of active consumers currently attached to this bus.
+    ///
+    /// It is not guaranteed that a sent message will reach this number of consumers, as active
+    /// consumers may never call `recv` or `try_recv` again before dropping.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use bus::Bus;
+    ///
+    /// let mut bus = Bus::<u8>::new(10);
+    /// assert_eq!(bus.rx_count(), 0);
+    ///
+    /// let rx1 = bus.add_rx();
+    /// assert_eq!(bus.rx_count(), 1);
+    ///
+    /// drop(rx1);
+    /// assert_eq!(bus.rx_count(), 0);
+    /// ```
+    pub fn rx_count(&self) -> usize {
+        self.readers - self.leaving.1.len()
+    }
 }
 
 impl<T> Drop for Bus<T> {
