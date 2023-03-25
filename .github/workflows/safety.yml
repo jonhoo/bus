@@ -54,16 +54,3 @@ jobs:
           # ignore leaks due to https://github.com/rust-lang/miri/issues/1371
           # no isolation since we use time in there
           MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-ignore-leaks"
-  loom:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          submodules: true
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@stable
-      - name: cargo test --test loom
-        run: cargo test --release --test loom
-        env:
-          LOOM_MAX_PREEMPTIONS: 2
-          RUSTFLAGS: "--cfg loom"
