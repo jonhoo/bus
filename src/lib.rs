@@ -344,11 +344,13 @@ impl<T> Bus<T> {
         // so we don't have to wait for unpark() to return in broadcast_inner
         // sending on a channel without contention is cheap, unparking is not
         let (unpark_tx, unpark_rx) = mpsc::unbounded::<thread::Thread>();
-        thread::spawn(move || {
-            for t in unpark_rx.iter() {
-                t.unpark();
-            }
-        });
+        let _ = thread::Builder::new()
+            .name("bus_unparking".to_owned())
+            .spawn(move || {
+                for t in unpark_rx.iter() {
+                    t.unpark();
+                }
+            });
 
         Bus {
             state: inner,
