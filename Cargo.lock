@@ -10,7 +10,7 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bus"
-version = "2.4.0"
+version = "2.4.1"
 dependencies = [
  "crossbeam-channel",
  "num_cpus",
