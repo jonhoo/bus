@@ -4,12 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
+# Spend CI time only on latest ref: https://github.com/jonhoo/rust-ci-conf/pull/5
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 name: safety
 jobs:
   sanitizers:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
       - name: Install nightly
@@ -19,8 +23,15 @@ jobs:
             sudo apt install llvm
             # to fix buggy leak analyzer:
             # https://github.com/japaric/rust-san#unrealiable-leaksanitizer
-            sed -i '/\[features\]/i [profile.dev]' Cargo.toml
-            sed -i '/profile.dev/a opt-level = 1' Cargo.toml
+            # ensure there's a profile.dev section
+            if ! grep -qE '^[ \t]*[profile.dev]' Cargo.toml; then
+                echo >> Cargo.toml
+                echo '[profile.dev]' >> Cargo.toml
+            fi
+            # remove pre-existing opt-levels in profile.dev
+            sed -i '/^\s*\[profile.dev\]/,/^\s*\[/ {/^\s*opt-level/d}' Cargo.toml
+            # now set opt-level to 1
+            sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
             cat Cargo.toml
         name: Enable debug symbols
       - name: cargo test -Zsanitizer=address
@@ -38,7 +49,7 @@ jobs:
   miri:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
       - run: |
