@@ -294,9 +294,6 @@ pub struct Bus<T> {
         mpsc::Receiver<(thread::Thread, usize)>,
     ),
 
-    // channel used to communicate to unparker that a given thread should be woken up
-    unpark: mpsc::Sender<thread::Thread>,
-
     // cache used to keep track of threads waiting for next write.
     // this is only here to avoid allocating one on every broadcast()
     cache: Vec<(thread::Thread, usize)>,
@@ -310,7 +307,6 @@ impl<T> fmt::Debug for Bus<T> {
             .field("rleft", &self.rleft)
             .field("leaving", &self.leaving)
             .field("waiting", &self.waiting)
-            .field("unpark", &self.unpark)
             .field("cache", &self.cache)
             .finish()
     }
@@ -340,26 +336,12 @@ impl<T> Bus<T> {
             let _ = time::Instant::now().elapsed();
         }
 
-        // we run a separate thread responsible for unparking
-        // so we don't have to wait for unpark() to return in broadcast_inner
-        // sending on a channel without contention is cheap, unparking is not
-        let (unpark_tx, unpark_rx) = mpsc::unbounded::<thread::Thread>();
-        let _ = thread::Builder::new()
-            .name("bus_unparking".to_owned())
-            .spawn(move || {
-                for t in unpark_rx.iter() {
-                    t.unpark();
-                }
-            });
-
         Bus {
             state: inner,
             readers: 0,
             rleft: iter::repeat(0).take(len).collect(),
             leaving: mpsc::unbounded(),
             waiting: mpsc::unbounded(),
-            unpark: unpark_tx,
-
             cache: Vec::new(),
         }
     }
@@ -479,7 +461,7 @@ impl<T> Bus<T> {
             if at == tail {
                 self.cache.push((t, at))
             } else {
-                self.unpark.send(t).unwrap();
+                t.unpark();
             }
         }
         for w in self.cache.drain(..) {
