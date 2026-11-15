@@ -3,6 +3,7 @@ name = "bus"
 version = "2.4.1"
 authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
 edition = "2018"
+rust-version = "1.53.0"
 license = "MIT OR Apache-2.0"
 
 readme = "README.md"
